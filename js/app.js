@@ -7,11 +7,13 @@ import { Supabase } from "./supabase.js";
 
                                                                                                                            
                                                                                            
+                                                               // sentido 0 = parado ou ainda sem direção
                                                                  
                                         
 
 const $ =                        (id        ) => document.getElementById(id)     ;
 const INTERVALO_MS = 10_000;
+const TRENS_MS = 10_000; // leitura do radar; 100 pessoas olhando ≈ 36 mil leituras/h, dentro do egress grátis (~1 KB cada)
 const ATRASO_MAX_MS = 14 * 60_000; // o banco recusa acima de 15 min; aqui descarta antes para não perder o lote inteiro
 const RAIO_LINHA_M = 150;
 const NUM                          = { central: 1, santa_cruz: -1 };
@@ -23,6 +25,8 @@ let ramal               = null;
 let sentido          = (lerLocal("mv_sentido")           ) || "central";
 let meuKm                = null;
 let alertas           = [];
+let trens         = [];
+let trensLidosEm = 0;
 let vigia                = null;
 let trava                          = null;
 let ultimaEnfileirada = 0;
@@ -92,6 +96,16 @@ function desenharFaixa()       {
   const es = estacoesNoSentido();
   const porEstacao = new Map                  ();
   for (const a of alertas) if (a.sentido === NUM[sentido]) porEstacao.set(a.estacao, [...(porEstacao.get(a.estacao) ?? []), a]);
+  // marcas entre estações: os trens do sentido escolhido (e os parados) e a posição do próprio aparelho
+  const marcas                                                  = trens
+    .filter((t) => t.sentido === 0 || t.sentido === NUM[sentido])
+    .map((t) => ({ km: t.km, classe: "trem", texto: `${t.sentido ? "Trem" : "Trem parado"} · visto há ${idade(t.visto_em)}` }));
+  if (meuKm != null) marcas.push({ km: meuKm, classe: "eu", texto: "Você está aqui" });
+  const porTrecho = new Map                       ();
+  for (const m of marcas) {
+    const i = Ramal.trechoDe(es, m.km);
+    if (i >= 0) porTrecho.set(i, [...(porTrecho.get(i) ?? []), m]);
+  }
   es.forEach((e, i) => {
     const li = document.createElement("li");
     li.className = "estacao" + (e.terminal ? " terminal" : "");
@@ -106,14 +120,33 @@ function desenharFaixa()       {
       li.append(b);
     }
     ol.append(li);
-    const prox = es[i + 1];
-    if (meuKm != null && prox && meuKm <= Math.max(e.km, prox.km) && meuKm >= Math.min(e.km, prox.km)) {
-      const eu = document.createElement("li");
-      eu.className = "eu";
-      eu.textContent = "Você está aqui";
-      ol.append(eu);
+    for (const m of (porTrecho.get(i) ?? []).sort((a, b) => Math.abs(a.km - e.km) - Math.abs(b.km - e.km))) {
+      const marca = document.createElement("li");
+      marca.className = m.classe;
+      marca.textContent = m.texto;
+      ol.append(marca);
     }
   });
+}
+
+function idade(iso        )         {
+  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+  return s < 60 ? `${s} s` : `${Math.round(s / 60)} min`;
+}
+
+function resumoTrens()       {
+  const n = trens.filter((t) => t.sentido === 0 || t.sentido === NUM[sentido]).length;
+  const lido = trensLidosEm ? ` Atualizado há ${idade(new Date(trensLidosEm).toISOString())}.` : "";
+  $("trens").textContent = (n ? `${n} ${n > 1 ? "trens" : "trem"} no radar neste sentido.` : "Nenhum trem no radar neste sentido agora.") + lido;
+}
+
+async function carregarTrens()                {
+  try {
+    trens = await sb.ler        ("trens_ao_vivo?select=*");
+    trensLidosEm = Date.now();
+    desenharFaixa();
+  } catch { /* offline: mantém os últimos; o "atualizado há" mostra a idade */ }
+  resumoTrens();
 }
 
 function preencherSelects()       {
@@ -286,7 +319,7 @@ function ligar()       {
   for (const b of document.querySelectorAll             ("[data-ir]")) b.addEventListener("click", () => mostrar(b.dataset.ir ));
   for (const b of document.querySelectorAll                  ("input[name=sentido]")) {
     b.checked = b.value === sentido;
-    b.addEventListener("change", () => { sentido = b.value           ; gravarLocal("mv_sentido", sentido); preencherSelects(); desenharFaixa(); atualizarEta(); });
+    b.addEventListener("change", () => { sentido = b.value           ; gravarLocal("mv_sentido", sentido); preencherSelects(); desenharFaixa(); resumoTrens(); atualizarEta(); });
   }
   $("btnTrem").addEventListener("click", () => (vigia == null ? iniciar() : parar()));
   $("destino").addEventListener("change", () => atualizarEta());
@@ -305,7 +338,7 @@ function ligar()       {
   addEventListener("online", () => { filaPos.liberar(); filaRel.liberar(); void esvaziarTudo(); });
   addEventListener("offline", () => void esvaziarTudo());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { if (vigia != null) void prenderTela(); void carregarAlertas(); void esvaziarTudo(); }
+    if (document.visibilityState === "visible") { if (vigia != null) void prenderTela(); void carregarAlertas(); void carregarTrens(); void esvaziarTudo(); }
   });
 }
 
@@ -322,8 +355,9 @@ async function comecar()                {
   preencherSelects();
   desenharFaixa();
   atualizarEta();
-  await Promise.all([carregarAlertas(), esvaziarTudo()]);
+  await Promise.all([carregarAlertas(), carregarTrens(), esvaziarTudo()]);
   setInterval(() => { if (document.visibilityState === "visible") void carregarAlertas(); }, 30_000);
+  setInterval(() => { if (document.visibilityState === "visible") void carregarTrens(); }, TRENS_MS);
   if ("serviceWorker" in navigator) {
     // Versão nova do app: quando o SW novo assume, recarrega uma vez para não rodar o JS velho do cache.
     // Na primeira instalação não há SW anterior, então não recarrega.

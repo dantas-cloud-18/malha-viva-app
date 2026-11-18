@@ -39,6 +39,14 @@ export class Ramal {
     return melhor;
   }
 
+  /** Índice i do trecho es[i]–es[i+1] que contém `km` (o primeiro, se cair bem na estação). -1 fora da linha. */
+  static trechoDe(es           , km        )         {
+    for (let i = 0; i < es.length - 1; i++) {
+      if (km >= Math.min(es[i].km, es[i + 1].km) && km <= Math.max(es[i].km, es[i + 1].km)) return i;
+    }
+    return -1;
+  }
+
   estacao(nome        )                      {
     return this.base.estacoes.find((e) => e.nome === nome);
   }
