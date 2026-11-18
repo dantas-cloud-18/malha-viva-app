@@ -18,11 +18,14 @@ export class Supabase {
                    http              ;
           sessao                = null;
 
-  constructor(guarda        , op                                                        = {}) {
+                   captcha                              ;
+
+  constructor(guarda        , op                                                                                                = {}) {
     this.url = op.url ?? SUPABASE_URL;
     this.chave = op.chave ?? SUPABASE_CHAVE;
     this.guarda = guarda;
     this.http = op.http ?? fetch.bind(globalThis);
+    this.captcha = op.captcha ?? (async () => null);
     try { this.sessao = JSON.parse(guarda.ler() || "null"); } catch { this.sessao = null; }
   }
 
@@ -45,7 +48,10 @@ export class Supabase {
 
   /** Token válido: renova 60 s antes de vencer; sem sessão, faz login anônimo. */
   async token()                  {
-    if (!this.sessao) await this.auth("/auth/v1/signup", {});
+    if (!this.sessao) {
+      const token = await this.captcha(); // só no primeiro login do aparelho; depois a sessão é renovada sem CAPTCHA
+      await this.auth("/auth/v1/signup", token ? { gotrue_meta_security: { captcha_token: token } } : {});
+    }
     else if (Date.now() > this.sessao.expira_em - 60_000) await this.auth("/auth/v1/token?grant_type=refresh_token", { refresh_token: this.sessao.refresh_token });
     return this.sessao .access_token;
   }

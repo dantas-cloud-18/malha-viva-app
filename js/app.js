@@ -1,5 +1,5 @@
 /** Malha Viva · PWA: radar do ramal, aviso rápido, SOS. Grava no Supabase (Fase 4, desenho A). */
-import { VERSAO_TERMO } from "./config.js";
+import { TURNSTILE_SITE, VERSAO_TERMO } from "./config.js";
 import { ArmazemMemoria, Fila,                                   } from "./fila.js";
 import { ArmazemIDB } from "./idb.js";
 import { Ramal,                         } from "./ramal.js";
@@ -39,7 +39,28 @@ function armazem   (loja        )             {
   return "indexedDB" in self ? new ArmazemIDB   (loja) : new ArmazemMemoria   ();
 }
 
-const sb = new Supabase({ ler: () => lerLocal("mv_sessao"), gravar: (v) => gravarLocal("mv_sessao", v) });
+/** Token do Cloudflare Turnstile para o primeiro login. O script só carrega se houver chave de site. */
+function captcha()                         {
+  if (!TURNSTILE_SITE) return Promise.resolve(null);
+  return new Promise((ok) => {
+    const desenhar = () => {
+      const T = (window                                  ).turnstile;
+      if (!T) return ok(null);
+      const caixa = document.createElement("div");
+      document.body.append(caixa);
+      T.render(caixa, { sitekey: TURNSTILE_SITE, appearance: "interaction-only", language: "pt-br",
+        callback: (t        ) => { ok(t); caixa.remove(); }, "error-callback": () => { ok(null); caixa.remove(); } });
+    };
+    if ((window                                      ).turnstile) return desenhar();
+    const s = document.createElement("script");
+    s.src = "https://challenges.cloudflare.com/turnstile/v0/api.js?render=explicit";
+    s.onload = desenhar;
+    s.onerror = () => ok(null); // sem rede: o login fica para a próxima tentativa
+    document.head.append(s);
+  });
+}
+
+const sb = new Supabase({ ler: () => lerLocal("mv_sessao"), gravar: (v) => gravarLocal("mv_sessao", v) }, { captcha });
 
 const filaPos = new Fila         (armazem("posicoes"), async (lote)                          => {
   const frescas = lote.filter((p) => Date.now() - Date.parse(p.t) < ATRASO_MAX_MS);
