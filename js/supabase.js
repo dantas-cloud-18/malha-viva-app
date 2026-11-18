@@ -65,6 +65,7 @@ export class Supabase {
         method: "POST",
         headers: { apikey: this.chave, Authorization: "Bearer " + t, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify(linhas),
+        keepalive: true, // o envio continua se a página sair da tela no meio (lote de 100 posições ≈ 12 KB, abaixo do limite de 64 KB)
       });
     } catch (e) { throw new ErroTemporario(String(e)); }
     if (r.status === 401) { if (this.sessao) this.sessao.expira_em = 0; throw new ErroTemporario("token vencido"); }

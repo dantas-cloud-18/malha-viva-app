@@ -70,7 +70,10 @@ select, input { font: inherit; min-height: 52px; padding: 8px 12px; border-radiu
 .faixa .eu { color: var(--verde-escuro); font-weight: 800; }
 .faixa .eu::before { content: ""; position: absolute; left: -33px; width: 24px; height: 24px; border-radius: 50%;
   background: var(--verde-aceso); border: 4px solid var(--verde-escuro); animation: pulso 2s ease-out infinite; }
-.faixa .trem { color: var(--verde-escuro); font-weight: 800; }
+.diag { font-size: 0.85rem; font-variant-numeric: tabular-nums; padding: 6px 10px; border-radius: 8px;
+  border: 2px solid var(--verde-escuro); }
+.diag[data-estado="alerta"] { border-color: #B42318; background: #B42318; color: #FFFFFF; font-weight: 700; }
+.faixa .trem {color: var(--verde-escuro); font-weight: 800; }
 .faixa .trem::before { content: ""; position: absolute; left: -33px; width: 24px; height: 24px; border-radius: 6px;
   background: var(--verde-escuro); border: 4px solid var(--verde-aceso); }
 @keyframes pulso { 0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, .7); } 100% { box-shadow: 0 0 0 14px rgba(74, 222, 128, 0); } }

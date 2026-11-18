@@ -4,6 +4,13 @@
                                                                
                                                                                                                 
 
+/** Distância em metros entre dois pontos (equirretangular; erro desprezível em poucos km). */
+export function distanciaM(lat1        , lon1        , lat2        , lon2        )         {
+  const r = Math.PI / 180;
+  const x = (lon2 - lon1) * r * Math.cos(((lat1 + lat2) / 2) * r);
+  return Math.hypot(x, (lat2 - lat1) * r) * 6_371_000;
+}
+
 export class Ramal {
            base      ;
                    cx        ;

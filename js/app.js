@@ -2,7 +2,7 @@
 import { TURNSTILE_SITE, VERSAO_TERMO } from "./config.js";
 import { ArmazemMemoria, Fila,                                   } from "./fila.js";
 import { ArmazemIDB } from "./idb.js";
-import { Ramal,                         } from "./ramal.js";
+import { distanciaM, Ramal,                         } from "./ramal.js";
 import { Supabase } from "./supabase.js";
 
                                                                                                                            
@@ -13,6 +13,10 @@ import { Supabase } from "./supabase.js";
 
 const $ =                        (id        ) => document.getElementById(id)     ;
 const INTERVALO_MS = 10_000;
+const PRECISAO_MAX_M = 100; // pior que isso não move o "Você está aqui" nem vai para o servidor
+const VEL_MAX_MS = 33;      // ~120 km/h: acima disso é salto do GPS, não o trem
+const SILENCIO_S = 30;      // linha de diagnóstico fica vermelha e conta um silêncio
+const RELIGAR_S = 20;       // GPS calado por 20 s: o vigia religa o watchPosition
 const TRENS_MS = 10_000; // leitura do radar; 100 pessoas olhando ≈ 36 mil leituras/h, dentro do egress grátis (~1 KB cada)
 const ATRASO_MAX_MS = 14 * 60_000; // o banco recusa acima de 15 min; aqui descarta antes para não perder o lote inteiro
 const RAIO_LINHA_M = 150;
@@ -78,7 +82,8 @@ const filaPos = new Fila         (armazem("posicoes"), async (lote)             
 const filaRel = new Fila        (armazem("relatos"), (lote) => sb.inserir("relatos", lote));
 
 async function esvaziarTudo()                {
-  await Promise.all([filaPos.esvaziar(), filaRel.esvaziar()]);
+  const [rp] = await Promise.all([filaPos.esvaziar(), filaRel.esvaziar()]);
+  if (reg && (rp.enviados || rp.rejeitados || rp.erro)) { reg.envios += 1; if (rp.erro) reg.errosEnvio += 1; }
   const n = (await filaPos.tamanho()) + (await filaRel.tamanho());
   $("rede").textContent = navigator.onLine ? (n ? `${n} na fila` : "Conectado") : (n ? `Sem rede, ${n} na fila` : "Sem rede");
   $("rede").dataset.estado = navigator.onLine ? (n ? "fila" : "ok") : "off";
@@ -172,32 +177,130 @@ async function carregarAlertas()                {
 }
 
 // ---------------------------------------------------------------- "Estou no trem" (tela ligada)
+// Fase 5 (iPhone): o iOS solta a trava de tela e às vezes para o watchPosition sem erro.
+// Por isso: trava pedida de novo, vigia que religa o GPS calado e registro da viagem na tela.
 async function prenderTela()                {
-  try { trava = await navigator.wakeLock?.request("screen") ?? null; } catch { trava = null; }
+  if (trava && !trava.released) return;
+  try {
+    trava = await navigator.wakeLock?.request("screen") ?? null;
+    trava?.addEventListener("release", () => {
+      if (vigia != null && document.visibilityState === "visible") void prenderTela();
+    });
+  } catch { trava = null; }
+}
+
+                                                                                                                   
+                                                                                                                                
+let reg                  = null;
+let ultimoFix = 0;        // hora (ms) da última posição recebida do GPS, boa ou ruim
+let ultimoAceito                                                 = null;
+let relogio                = null;
+let ultimoReligar = 0;
+
+function novoRegistro()           {
+  return { inicio: Date.now(), fixes: 0, aceitos: 0, ruins: 0, saltos: 0, religados: 0, silencios: [], maiorSilencioS: 0,
+    envios: 0, errosEnvio: 0, precisoes: [] };
+}
+
+function aoReceber(p                     )       {
+  const agora = Date.now();
+  if (reg) {
+    reg.fixes += 1;
+    const gap = ultimoFix ? (agora - ultimoFix) / 1000 : 0;
+    if (gap > SILENCIO_S) reg.silencios.push({ inicio: new Date(ultimoFix).toLocaleTimeString("pt-BR"), s: Math.round(gap) });
+    reg.maiorSilencioS = Math.max(reg.maiorSilencioS, Math.round(gap));
+  }
+  ultimoFix = agora;
+  const { latitude: lat, longitude: lon, accuracy } = p.coords;
+  if (accuracy > PRECISAO_MAX_M) { if (reg) reg.ruins += 1; return; } // posição ruim não move nem vai para o servidor
+  if (ultimoAceito) {
+    const dt = (p.timestamp - ultimoAceito.t) / 1000;
+    if (dt > 0 && distanciaM(ultimoAceito.lat, ultimoAceito.lon, lat, lon) / dt > VEL_MAX_MS) { if (reg) reg.saltos += 1; return; }
+  }
+  ultimoAceito = { t: p.timestamp, lat, lon };
+  if (reg) { reg.aceitos += 1; reg.precisoes.push(Math.round(accuracy)); }
+  if (ramal) {
+    const proj = ramal.projetar(lat, lon);
+    const naLinha = proj.distM <= RAIO_LINHA_M;
+    meuKm = naLinha ? proj.km : null;
+    $("posStatus").textContent = naLinha ? "Posição na linha do trem." : "Você parece estar fora da linha do trem.";
+    desenharFaixa();
+    atualizarEta();
+  }
+  if (p.timestamp - ultimaEnfileirada < INTERVALO_MS - 1500) return;
+  ultimaEnfileirada = p.timestamp;
+  void filaPos.adicionar({ viagem: idViagem, t: new Date(p.timestamp).toISOString(), lat, lon, precisao_m: Math.round(accuracy) })
+    .then(esvaziarTudo);
+}
+
+function ligarGps()       {
+  if (vigia != null) navigator.geolocation.clearWatch(vigia);
+  vigia = navigator.geolocation.watchPosition(aoReceber,
+    (e) => { $("posStatus").textContent = e.code === 1 ? "Permita a localização para ajudar o radar." : "GPS sem sinal agora."; },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 20000 }); // maximumAge 0: no trem, posição de 5 s atrás erra ~80 m
+}
+
+function religarGps()       {
+  if (vigia == null) return;
+  if (reg) reg.religados += 1;
+  ligarGps();
+}
+
+function mediana(xs          )                {
+  if (!xs.length) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  return s[Math.floor(s.length / 2)];
+}
+
+async function desenharDiag()                {
+  const d = $("diag");
+  if (!reg) { d.hidden = true; return; }
+  d.hidden = false;
+  const idadeS = ultimoFix ? Math.round((Date.now() - ultimoFix) / 1000) : null;
+  const prec = reg.precisoes.at(-1);
+  const fila = await filaPos.tamanho();
+  d.textContent = `Último GPS há ${idadeS ?? "–"} s · precisão ${prec ?? "–"} m · fila ${fila} · silêncios > ${SILENCIO_S} s: ${reg.silencios.length}`;
+  d.dataset.estado = vigia != null && (idadeS == null || idadeS > SILENCIO_S) ? "alerta" : "ok";
+  if (vigia != null && idadeS != null && idadeS > RELIGAR_S && Date.now() - ultimoReligar > RELIGAR_S * 1000) {
+    ultimoReligar = Date.now();
+    religarGps();
+  }
+}
+
+function textoRegistro()         {
+  if (!reg) return "Sem viagem registrada.";
+  const min = Math.round((Date.now() - reg.inicio) / 60000);
+  return [
+    `Malha Viva · registro da viagem ${idViagem}`,
+    `Início: ${new Date(reg.inicio).toLocaleString("pt-BR")} · duração: ${min} min`,
+    `Aparelho: ${navigator.userAgent}`,
+    `Posições do GPS: ${reg.fixes} · aceitas: ${reg.aceitos} · ruins (> ${PRECISAO_MAX_M} m): ${reg.ruins} · saltos: ${reg.saltos}`,
+    `Precisão mediana: ${mediana(reg.precisoes) ?? "–"} m`,
+    `Maior silêncio: ${reg.maiorSilencioS} s · silêncios > ${SILENCIO_S} s: ${reg.silencios.map((s) => `${s.inicio} (${s.s} s)`).join(", ") || "nenhum"}`,
+    `GPS religado pelo vigia: ${reg.religados} vez(es)`,
+    `Rodadas de envio: ${reg.envios} · com erro: ${reg.errosEnvio}`,
+  ].join("\n");
+}
+
+async function copiarRegistro()                {
+  const t = textoRegistro();
+  try { await navigator.clipboard.writeText(t); $("posStatus").textContent = "Registro copiado. Cole no WhatsApp ou numa nota."; }
+  catch { $("posStatus").textContent = t; }
 }
 
 function iniciar()       {
   if (!("geolocation" in navigator)) { $("posStatus").textContent = "Este navegador não dá acesso à localização."; return; }
   idViagem = "v-" + crypto.randomUUID().slice(0, 8); // código novo a cada viagem
-  vigia = navigator.geolocation.watchPosition(async (p) => {
-    if (ramal) {
-      const proj = ramal.projetar(p.coords.latitude, p.coords.longitude);
-      const naLinha = proj.distM <= RAIO_LINHA_M;
-      meuKm = naLinha ? proj.km : null;
-      $("posStatus").textContent = naLinha ? "Posição na linha do trem." : "Você parece estar fora da linha do trem.";
-      desenharFaixa();
-      atualizarEta();
-    }
-    if (p.timestamp - ultimaEnfileirada < INTERVALO_MS - 1500) return;
-    ultimaEnfileirada = p.timestamp;
-    await filaPos.adicionar({ viagem: idViagem, t: new Date(p.timestamp).toISOString(), lat: p.coords.latitude,
-      lon: p.coords.longitude, precisao_m: Math.round(p.coords.accuracy) });
-    await esvaziarTudo();
-  }, (e) => { $("posStatus").textContent = e.code === 1 ? "Permita a localização para ajudar o radar." : "GPS sem sinal agora."; },
-  { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 });
+  reg = novoRegistro();
+  ultimoFix = Date.now(); // conta a espera pela primeira posição; se passar de 20 s, o vigia religa
+  ultimoReligar = 0;
+  ultimoAceito = null;
+  ligarGps();
   void prenderTela();
+  relogio ??= window.setInterval(() => void desenharDiag(), 1000);
   $("btnTrem").textContent = "Parar";
   $("btnTrem").setAttribute("aria-pressed", "true");
+  $("btnRegistro").hidden = false;
 }
 
 function parar()       {
@@ -207,6 +310,7 @@ function parar()       {
   trava = null;
   $("btnTrem").textContent = "Estou no trem";
   $("btnTrem").setAttribute("aria-pressed", "false");
+  void desenharDiag();
   void esvaziarTudo();
 }
 
@@ -338,8 +442,12 @@ function ligar()       {
   addEventListener("online", () => { filaPos.liberar(); filaRel.liberar(); void esvaziarTudo(); });
   addEventListener("offline", () => void esvaziarTudo());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") { if (vigia != null) void prenderTela(); void carregarAlertas(); void carregarTrens(); void esvaziarTudo(); }
+    if (document.visibilityState === "visible") {
+      if (vigia != null) { void prenderTela(); religarGps(); } // depois de trocar de app, o watch antigo pode não voltar
+      void carregarAlertas(); void carregarTrens(); void esvaziarTudo();
+    } else void esvaziarTudo(); // saindo da tela: última tentativa de envio (fetch com keepalive)
   });
+  $("btnRegistro").addEventListener("click", () => void copiarRegistro());
 }
 
 async function comecar()                {
