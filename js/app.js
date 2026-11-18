@@ -47,9 +47,13 @@ function captcha()                         {
       const T = (window                                  ).turnstile;
       if (!T) return ok(null);
       const caixa = document.createElement("div");
+      // fixa no meio da tela: se a Cloudflare pedir o clique, a caixa não pode ficar escondida no fim da página
+      caixa.style.cssText = "position:fixed;left:50%;top:40%;transform:translateX(-50%);z-index:1000";
       document.body.append(caixa);
+      const fim = (t               ) => { clearTimeout(prazo); ok(t); caixa.remove(); };
+      const prazo = setTimeout(() => fim(null), 120_000); // ninguém clicou: segue sem token e tenta de novo depois
       T.render(caixa, { sitekey: TURNSTILE_SITE, appearance: "interaction-only", language: "pt-br",
-        callback: (t        ) => { ok(t); caixa.remove(); }, "error-callback": () => { ok(null); caixa.remove(); } });
+        callback: (t        ) => fim(t), "error-callback": () => fim(null) });
     };
     if ((window                                      ).turnstile) return desenhar();
     const s = document.createElement("script");
