@@ -1,0 +1,15 @@
+{
+  "name": "Malha Viva",
+  "short_name": "Malha Viva",
+  "description": "Radar do ramal Santa Cruz feito pelos passageiros.",
+  "lang": "pt-BR",
+  "start_url": ".",
+  "scope": ".",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#F6F4EC",
+  "theme_color": "#14532D",
+  "icons": [
+    { "src": "icone.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
