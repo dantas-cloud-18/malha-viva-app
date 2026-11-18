@@ -1,5 +1,5 @@
 /** Service Worker: abre sem rede (casca do app em cache) e guarda o último traçado do ramal. */
-const VERSAO = "mv-baa483db69"; // trocado pelo build.mjs pelo hash da casca
+const VERSAO = "mv-9d79d7227c"; // trocado pelo build.mjs pelo hash da casca
 const sw = self                                       ;
 // Caminhos relativos à pasta do sw.js: o app funciona na raiz ou numa subpasta (ex.: GitHub Pages).
 const rel = (p        ) => new URL(p, location.href).pathname;
@@ -8,7 +8,10 @@ const CASCA = ["./", "index.html", "estilo.css", "manifest.webmanifest", "icone.
 const DADOS = ["base.json"].map(rel); // rede primeiro, cache se offline (o Supabase não passa pelo cache)
 
 sw.addEventListener("install", (ev) => {
-  ev.waitUntil(caches.open(VERSAO).then((c) => c.addAll(CASCA)).then(() => sw.skipWaiting()));
+  // "reload": busca no servidor, não no cache HTTP do navegador. O GitHub Pages manda max-age=600, e sem isso
+  // a versão nova do SW guardava os arquivos velhos (visto em 18/11: cache mv-baa483db69 com o index.html antigo).
+  ev.waitUntil(caches.open(VERSAO).then((c) => c.addAll(CASCA.map((u) => new Request(u, { cache: "reload" }))))
+    .then(() => sw.skipWaiting()));
 });
 
 sw.addEventListener("activate", (ev) => {
