@@ -57,7 +57,7 @@ h3 { font-size: 1.1rem; margin: 24px 0 8px; }
 .rede { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 700; padding: 6px 10px;
   border-radius: 999px; border: var(--b) solid currentColor; white-space: nowrap; }
 .rede .no { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
-.rede[data-estado="ok"] { color: var(--linha); }
+.rede[data-estado="ok"] { color: var(--marca); } /* crítica: verde ramal dava 3,15:1 */
 .rede[data-estado="ok"] .no { background: var(--aceso); box-shadow: 0 0 0 2px var(--linha); }
 .rede[data-estado="fila"] { color: #8A5A00; }
 .rede[data-estado="fila"] .no { animation: piscar 1.2s ease-in-out infinite; }
@@ -89,7 +89,7 @@ button, .ligar a, .contato { font: inherit; min-height: 56px; border-radius: var
 
 /* "Estou no trem": o anel se fecha enquanto o GPS procura; o nó acende quando a posição cai na linha */
 .principal { width: 100%; min-height: 68px; display: flex; align-items: center; justify-content: center; gap: 14px;
-  border: 0; background: var(--linha); color: #fff; font-family: var(--titulo); font-size: 1.3rem; font-weight: 700; }
+  border: 0; background: #157A3A; color: #fff; font-family: var(--titulo); font-size: 1.3rem; font-weight: 700; } /* crítica: 5:1 no sol (era 3,5:1) */
 .anel { width: 40px; height: 40px; flex: none; transform: rotate(-90deg); }
 .anel circle { fill: none; stroke-width: 4; }
 .anel .trilho { stroke: rgba(255, 255, 255, 0.35); }
@@ -172,10 +172,10 @@ select, input { font: inherit; min-height: 54px; padding: 8px 12px; border-radiu
 
 /* ------------------------------------------------------------------ segurar 1 s para enviar */
 .segurar { position: relative; overflow: hidden; isolation: isolate; }
-.segurar::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--enche, var(--sinal));
+.segurar::before { content: ""; position: absolute; inset: auto 0 0 0; height: 8px; z-index: -1; background: var(--enche, var(--sinal));
   transform: scaleX(0); transform-origin: left; }
 .segurar.segurando::before { transform: scaleX(1); transition: transform 1s linear; }
-.segurar.feito::before { transform: scaleX(1); }
+.segurar.feito::before { transform: scaleX(1); height: 100%; } /* crítica: só enche o botão todo no fim; durante, barra embaixo (texto legível) */
 .tipos { display: grid; gap: 10px; margin-top: 12px; }
 .tipos button { border: var(--b) solid var(--borda); background: transparent; color: var(--tinta); font-weight: 700; text-align: left; padding: 0 16px; }
 .tipos button.feito { color: var(--sinal-tinta); } /* durante o preenchimento o texto fica na cor normal, legível */
@@ -233,3 +233,19 @@ select, input { font: inherit; min-height: 54px; padding: 8px 12px; border-radiu
 .principal[data-gps="fora"] .anel .feito { stroke: var(--sinal); stroke-dashoffset: 0; }
 /* revisão: segurar no celular sem selecionar texto nem abrir menu; arrastar para rolar cancela */
 .segurar { touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+
+/* crítica (impeccable, 26/40) */
+.principal .textos { display: grid; text-align: left; line-height: 1.15; }
+.principal .estado { font-family: var(--texto); font-size: 0.9rem; font-weight: 700; opacity: 0.92; }
+.principal .estado:empty { display: none; }
+.principal.segurando::before, .principal.feito::before { --enche: var(--perigo); }
+.eta.vazio { font-family: var(--texto); font-size: 1rem; font-weight: 400; color: var(--suave); }
+.onde { font-weight: 700; color: var(--marca); margin: 4px 0 8px; }
+.onde:empty { display: none; }
+.faixa .resumo { min-height: 40px; }
+.faixa .resumo button { min-height: 40px; padding: 0 12px; border: var(--b) dashed var(--borda); background: transparent; color: var(--suave); font-weight: 700; border-radius: 10px; }
+#diag details > summary, .novo-contato > summary { font-family: var(--titulo); font-weight: 700; cursor: pointer; min-height: 44px; display: flex; align-items: center; }
+#diag[data-estado="alerta"] summary { color: var(--perigo); }
+.sos-link { margin: 4px 0 8px; font-weight: 700; }
+.sos-link a { color: var(--tinta); }
+.novo-contato { margin-top: 12px; }

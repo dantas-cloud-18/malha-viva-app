@@ -149,6 +149,7 @@ function desenharFaixa()       {
       ol.append(marca);
     }
   });
+  resumirFaixa(ol);
   // Nota 2: o trilho se preenche da origem (embaixo) até o nó aceso
   const eu = ol.querySelector             (".eu");
   if (eu) ol.style.setProperty("--feito-topo", `${eu.offsetTop + eu.offsetHeight / 2}px`);
@@ -160,6 +161,37 @@ function texto(el             , t        )       {
   if (el.textContent !== t) el.textContent = t;
 }
 
+/**
+ * Crítica P2: com "você" na faixa, mostra só as estações perto (5 de cada lado), as pontas e as que têm aviso ou trem.
+ * O resto vira uma linha "N estações" que abre a faixa inteira.
+ */
+let faixaCompleta = false;
+function resumirFaixa(ol             )       {
+  const itens = [...ol.children]                 ;
+  const euIdx = itens.findIndex((li) => li.classList.contains("eu"));
+  if (euIdx < 0 || faixaCompleta) return;
+  const estacoes = itens.map((li, i) => ({ li, i })).filter(({ li }) => li.classList.contains("estacao"));
+  const posEu = estacoes.filter(({ i }) => i < euIdx).length; // estações antes do "você"
+  const manter = (k        , li             , i        ) => k === 0 || k === estacoes.length - 1 || Math.abs(k - posEu) <= 5
+    || li.querySelector(".aviso") != null || itens[i + 1]?.classList.contains("trem");
+  let escondidas                = [];
+  const fechar = () => {
+    if (!escondidas.length) return;
+    const r = document.createElement("li");
+    r.className = "resumo";
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = `${escondidas.length} ${escondidas.length > 1 ? "estações" : "estação"}: mostrar`;
+    b.addEventListener("click", () => { faixaCompleta = true; desenharFaixa(); });
+    r.append(b);
+    escondidas[0].before(r);
+    for (const e of escondidas) e.hidden = true;
+    escondidas = [];
+  };
+  estacoes.forEach(({ li, i }, k) => { if (manter(k, li, i)) fechar(); else escondidas.push(li); });
+  fechar();
+}
+
 function minutos(s        )         {
   return `${Math.max(1, Math.round(s / 60))} min`;
 }
@@ -167,12 +199,15 @@ function minutos(s        )         {
 /** Nota 2: barra do trecho atual e tabela das próximas estações. */
 function atualizarChegadas()       {
   const trecho = $("trecho"), bloco = $("blocoChegadas");
-  if (meuKm == null || !ramal) { trecho.hidden = true; bloco.hidden = true; return; }
+  if (meuKm == null || !ramal) { trecho.hidden = true; bloco.hidden = true; texto($("avisoOnde"), ""); return; }
   const s = NUM[sentido], km = meuKm;
   const es = ramal.base.estacoes;
   const frente = es.filter((e) => (e.km - km) * s > 0.05).sort((a, b) => (a.km - b.km) * s);
   const tras = es.filter((e) => (e.km - km) * s <= 0.05).sort((a, b) => (b.km - a.km) * s);
   const de = tras[0], para = frente[0];
+  // crítica P1: o aviso vai, por padrão, para a próxima estação do trecho, não para o destino
+  if (para && !avisoManual) $                   ("avisoEstacao").value = para.nome;
+  texto($("avisoOnde"), de && para ? `Você está entre ${de.nome} e ${para.nome}. O aviso vai para ${$                   ("avisoEstacao").value}.` : "");
   if (de && para) {
     const p = Math.min(1, Math.max(0, Math.abs(km - de.km) / (Math.abs(para.km - de.km) || 1)));
     $("trechoDe").textContent = de.nome;
@@ -222,7 +257,7 @@ function resumoTrens()       {
   const n = trens.filter((t) => t.sentido === 0 || t.sentido === NUM[sentido]).length;
   const lido = trensLidosEm ? ` Atualizado há ${idade(new Date(trensLidosEm).toISOString())}.` : "";
   $("trens").textContent = (n ? `${n} ${n > 1 ? "trens" : "trem"} no radar neste sentido.`
-    : "Nenhum trem no radar neste sentido. Toque em Estou no trem para ser o primeiro.") + lido;
+    : "Nenhum trem no radar neste sentido ainda.") + lido;
 }
 
 async function carregarTrens()                {
@@ -240,6 +275,7 @@ function preencherSelects()       {
     const atual = sel.value;
     sel.replaceChildren(...estacoesNoSentido().map((e) => new Option(e.nome, e.nome)));
     if (atual) sel.value = atual;
+    else if (id === "avisoEstacao" && lerLocal("mv_ultima_estacao")) sel.value = lerLocal("mv_ultima_estacao") ; // sem GPS: a última avisada
   }
 }
 
@@ -247,9 +283,10 @@ function atualizarEta()       {
   const destino = $                   ("destino").value;
   const saida = $("eta");
   atualizarChegadas();
+  saida.classList.toggle("vazio", meuKm == null || !destino || !ramal);
   if (meuKm == null || !destino || !ramal) {
     texto(saida, vigia != null && ultimoBom && !naLinhaAgora ? "Você parece estar fora da linha do trem. A chegada aparece quando a posição cair na linha."
-      : vigia != null ? "Esperando a posição do GPS." : "Toque em Estou no trem para ver quando você chega.");
+      : vigia != null ? "Esperando a posição do GPS." : "Quando você estiver no trem, a chegada aparece aqui.");
     return;
   }
   const s = ramal.eta(meuKm, NUM[sentido], destino);
@@ -290,6 +327,8 @@ let suave = new Suavizador();
 let detector                        = null;
 let sentidoErradoDesde = 0;           // A11
 let recarregarDepois = false;         // A2: versão nova espera o "Parar"
+let rolouParaMim = false;             // crítica: rolar até "você" só uma vez por viagem
+let avisoManual = false;              // crítica: a pessoa escolheu a estação do aviso; não trocar sozinho
 
 function novoRegistro()           {
   return { inicio: Date.now(), fixes: 0, aceitos: 0, ruins: 0, saltos: 0, religados: 0, silencios: [], maiorSilencioS: 0,
@@ -356,6 +395,12 @@ function desenharPosicao()       {
   meuKm = vigia != null && naLinhaAgora ? suave.agora(Date.now()) : null;
   desenharFaixa();
   atualizarEta();
+  // crítica P2: na primeira posição na linha, a tela vai até "você" (uma vez por viagem)
+  const eu = document.querySelector             ("#faixa .eu");
+  if (eu && !rolouParaMim && !document.querySelector             ("[data-aba=radar]") .hidden) {
+    rolouParaMim = true;
+    eu.scrollIntoView({ block: "center", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth" });
+  }
 }
 
 /** A11: o km dizendo um sentido por 60 s e o usuário marcado no outro → oferece a troca. */
@@ -419,6 +464,7 @@ async function tique()                {
   linhaDiag("fila", `${fila}`, Math.min(1, fila / 30), fila > 30 ? "ruim" : fila > 5 ? "atencao" : "ok");
   linhaDiag("silencios", `${reg.silencios.length}`, Math.min(1, reg.silencios.length / 5), reg.silencios.length ? "atencao" : "ok");
   d.dataset.estado = vigia != null && (bomS == null || bomS > SILENCIO_S) ? "alerta" : "ok";
+  if (d.dataset.estado === "alerta" && vigia != null && bomS != null) ($("diagDet")                      ).open = true;
 }
 
 /** Vigia: GPS calado por 20 s → religa. Roda antes de qualquer espera do tique (revisão). */
@@ -442,32 +488,45 @@ function linhaDiag(item        , valor        , p        , nivel                
 function estadoBotao()       {
   const b = $("btnTrem");
   const anel = b.querySelector            (".feito") ;
-  if (vigia == null) { b.dataset.gps = "off"; anel.style.setProperty("--p", "0"); return; }
+  const est = b.querySelector(".estado") ;
+  if (vigia == null) { b.dataset.gps = "off"; anel.style.setProperty("--p", "0"); texto(b.querySelector(".rotulo") , "Estou no trem"); est.textContent = ""; return; }
   const bomS = ultimoBom ? (Date.now() - ultimoBom) / 1000 : null;
   if (bomS != null && bomS <= SILENCIO_S && naLinhaAgora) { b.dataset.gps = "ok"; anel.style.setProperty("--p", "1"); }
   else if (bomS != null && bomS > SILENCIO_S) { b.dataset.gps = "calado"; anel.style.setProperty("--p", "1"); }
   else if (bomS != null && !naLinhaAgora) { b.dataset.gps = "fora"; anel.style.setProperty("--p", "1"); }
   else { b.dataset.gps = "procurando"; anel.style.setProperty("--p", String(Math.min(1, (Date.now() - ultimoFix) / 1000 / RELIGAR_S))); }
-  b.querySelector(".rotulo") .textContent = b.dataset.gps === "ok" ? "Parar" : b.dataset.gps === "calado" ? "GPS calado" : b.dataset.gps === "fora" ? "Fora da linha" : "Procurando GPS";
+  texto(b.querySelector(".rotulo") , "Segure para parar");
+  texto(est               , b.dataset.gps === "ok" ? "Na linha, enviando" : b.dataset.gps === "calado" ? `GPS sem sinal há ${Math.round(bomS ?? 0)} s`
+    : b.dataset.gps === "fora" ? "GPS ok, fora da linha do trem" : "Procurando o GPS");
 }
 
 /** Nota 2: segurar 1 s para confirmar; soltar antes cancela. Funciona com toque, mouse e teclado (Enter/Espaço). */
-function segurar(btn             , acao            , ms = 1000)       {
+function segurar(btn             , acao            , ms = 1000, ativo                = () => true)       {
   let timer                = null;
+  let inicio = 0;
   const comecar = (ev       ) => {
-    if (timer != null) return;
+    if (timer != null || !ativo()) return;
     ev.preventDefault();
+    inicio = Date.now();
     btn.classList.add("segurando");
     timer = window.setTimeout(() => {
       timer = null;
       btn.classList.remove("segurando");
       btn.classList.add("feito");
       navigator.vibrate?.(40);
+      btn.dataset.segurou = "1"; // o "click" que vem ao soltar não deve repetir a ação
       acao();
       setTimeout(() => btn.classList.remove("feito"), 1200);
     }, ms);
   };
-  const cancelar = () => { if (timer != null) { clearTimeout(timer); timer = null; } btn.classList.remove("segurando"); };
+  const cancelar = () => {
+    if (timer != null) {
+      clearTimeout(timer); timer = null;
+      // crítica: soltou no meio (dedo escorregou com o trem balançando) → avisa em vez de cancelar calado
+      if (Date.now() - inicio > 200) btn.dispatchEvent(new CustomEvent("segurar-cancelado", { bubbles: true }));
+    }
+    btn.classList.remove("segurando");
+  };
   btn.addEventListener("pointerdown", comecar);
   for (const ev of ["pointerup", "pointerleave", "pointercancel"]) btn.addEventListener(ev, cancelar);
   btn.addEventListener("keydown", (ev) => { if ((ev.key === "Enter" || ev.key === " ") && !ev.repeat) comecar(ev); });
@@ -534,7 +593,8 @@ function iniciar(retomar              )       {
   sentidoErradoDesde = 0;
   ligarGps();
   void prenderTela();
-  $("btnTrem").querySelector(".rotulo") .textContent = "Procurando GPS";
+  estadoBotao();
+  rolouParaMim = false;
   $("btnTrem").setAttribute("aria-pressed", "true");
   $("btnRegistro").hidden = false;
   if (retomar) $("posStatus").textContent = "Rastreamento retomado depois de recarregar a página.";
@@ -547,7 +607,7 @@ function parar()       {
   void trava?.release();
   trava = null;
   naLinhaAgora = false;
-  $("btnTrem").querySelector(".rotulo") .textContent = "Estou no trem";
+  estadoBotao();
   $("btnTrem").setAttribute("aria-pressed", "false");
   $("btnTrocarSentido").hidden = true;
   desenharPosicao();
@@ -596,6 +656,7 @@ async function enviarAviso(tipo        )                {
     return;
   }
   $("avisoStatus").textContent = `Aviso enviado: ${tipo} em ${estacao}.`;
+  gravarLocal("mv_ultima_estacao", estacao);
   void carregarAlertas();
 }
 
@@ -640,9 +701,20 @@ async function textoSos()                  {
 }
 
 async function compartilharSos()                {
+  $("sosStatus").textContent = "Pegando sua localização…"; // crítica P2: retorno logo depois do gesto
   const texto = await textoSos();
+  const quando = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+  const link = texto.match(/https:\/\/maps\.google\.com\/\?q=[-\d.,]+/)?.[0];
+  const sl = $("sosLink");
+  sl.hidden = !link;
+  if (link) { sl.querySelector("a") .href = link; sl.querySelector("a") .textContent = `Sua localização às ${quando}`; }
+  $("sosStatus").textContent = link ? `Localização das ${quando} pronta. Escolha para quem mandar.` : "Sem GPS agora. A mensagem vai sem a localização.";
   try {
-    if (navigator.share) { await navigator.share({ text: texto }); return; }
+    if (navigator.share) {
+      await navigator.share({ text: texto });
+      $("sosStatus").textContent = `Localização das ${quando} compartilhada. Segure de novo para mandar outra atualizada.`;
+      return;
+    }
   } catch { /* o iOS pode negar o compartilhar depois da espera do GPS: tenta copiar */ }
   try {
     await navigator.clipboard.writeText(texto);
@@ -723,7 +795,21 @@ function ligar()       {
     b.checked = b.value === sentido;
     b.addEventListener("change", () => { sentido = b.value           ; gravarLocal("mv_sentido", sentido); preencherSelects(); desenharFaixa(); resumoTrens(); atualizarEta(); });
   }
-  $("btnTrem").addEventListener("click", () => (vigia == null ? iniciar() : parar()));
+  // crítica P1: tocar liga; para parar, segurar 1 s (um toque sem querer no trem não encerra a viagem)
+  $("btnTrem").addEventListener("click", () => {
+    const b = $("btnTrem");
+    if (b.dataset.segurou) { delete b.dataset.segurou; return; }
+    if (vigia == null) iniciar(); else $("posStatus").textContent = "Para parar, segure o botão por 1 segundo.";
+  });
+  segurar($("btnTrem"), () => parar(), 1000, () => vigia != null);
+  document.addEventListener("segurar-cancelado", (ev) => {
+    const alvo = ev.target               ;
+    const msg = "Soltou antes de encher. Segure até o fim para confirmar.";
+    if (alvo.id === "btnTrem") $("posStatus").textContent = msg;
+    else if (alvo.id === "btnSos") $("sosStatus").textContent = msg;
+    else $("avisoStatus").textContent = msg;
+  });
+  $("avisoEstacao").addEventListener("change", () => { avisoManual = true; });
   $("destino").addEventListener("change", () => atualizarEta());
   $("btnMapa").addEventListener("click", () => void abrirMapa());
   for (const b of document.querySelectorAll             ("[data-tipo]")) segurar(b, () => void enviarAviso(b.dataset.tipo ));

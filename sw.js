@@ -1,5 +1,5 @@
 /** Service Worker: abre sem rede (casca do app em cache) e guarda o último traçado do ramal. */
-const VERSAO = "mv-6034f87fe8"; // trocado pelo build.mjs pelo hash da casca
+const VERSAO = "mv-89d9d2913f"; // trocado pelo build.mjs pelo hash da casca
 const sw = self                                       ;
 // Caminhos relativos à pasta do sw.js: o app funciona na raiz ou numa subpasta (ex.: GitHub Pages).
 const rel = (p        ) => new URL(p, location.href).pathname;

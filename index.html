@@ -56,9 +56,9 @@
           <circle class="feito" cx="22" cy="22" r="18" pathLength="100"/>
           <circle class="no" cx="22" cy="22" r="7"/>
         </svg>
-        <span class="rotulo">Estou no trem</span>
+        <span class="textos"><span class="rotulo">Estou no trem</span><span class="estado"></span></span>
       </button>
-      <p class="dica">Deixe esta tela aberta durante a viagem. No iPhone, o envio para quando a tela apaga.</p>
+      <p class="dica">Toque para começar. Deixe esta tela aberta durante a viagem: no iPhone, o envio para quando a tela apaga.</p>
       <p id="posStatus" class="status" role="status"></p>
       <button id="btnTrocarSentido" class="secundario aviso-sentido" type="button" hidden></button>
 
@@ -87,18 +87,31 @@
       <ol id="faixa" class="faixa" aria-label="Estações no sentido escolhido, do destino para trás"></ol>
       <button id="btnMapa" class="secundario" type="button">Ver no mapa</button>
       <div id="mapa" class="mapa" hidden></div>
+      <details class="privacidade">
+        <summary>Seus dados no Malha Viva</summary>
+        <ul>
+          <li>Com "Estou no trem" ligado, o app envia a sua posição a cada 2 segundos para montar o radar.</li>
+          <li>Ninguém vê a posição de outra pessoa. O radar mostra só o trem: em que ponto da linha está, para onde vai e há quanto tempo foi visto.</li>
+          <li>Você entra sem nome, e-mail ou CPF. O app cria um código anônimo neste celular.</li>
+          <li>Nesta fase de testes, as posições ficam guardadas para calcular os tempos entre as estações. Depois dos testes, elas passam a ser apagadas em 7 dias, e só os tempos médios ficam.</li>
+          <li>Avisos ficam visíveis por 30 minutos, sem dizer quem avisou.</li>
+          <li>Se o app der erro, ele envia a mensagem do erro, a versão do app e o modelo do navegador, para a gente corrigir.</li>
+        </ul>
+      </details>
 
-      <section class="bloco" id="diag" aria-labelledby="t-diag" data-estado="ok" hidden>
-        <h2 id="t-diag">Como está o rastreamento</h2>
+      <section class="bloco" id="diag" aria-label="Detalhes do GPS" data-estado="ok" hidden>
+        <details id="diagDet">
+        <summary>Detalhes do GPS</summary>
         <table class="tabela diagnostico">
           <tbody>
-            <tr data-item="bom"><th scope="row">Último ponto bom</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
-            <tr data-item="prec"><th scope="row">Precisão do GPS</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
-            <tr data-item="fila"><th scope="row">Esperando envio</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
-            <tr data-item="silencios"><th scope="row">Silêncios acima de 30 s</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
+            <tr data-item="bom"><th scope="row">Posição recebida</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
+            <tr data-item="prec"><th scope="row">Precisão</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
+            <tr data-item="fila"><th scope="row">Esperando para enviar</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
+            <tr data-item="silencios"><th scope="row">Vezes sem sinal (mais de 30 s)</th><td class="valor"></td><td class="medidor"><span></span></td></tr>
           </tbody>
         </table>
         <button id="btnRegistro" class="secundario" type="button" hidden>Copiar registro da viagem</button>
+        </details>
       </section>
     </section>
 
@@ -107,6 +120,7 @@
       <label class="campo">Estação
         <select id="avisoEstacao"></select>
       </label>
+      <p id="avisoOnde" class="onde" role="status"></p>
       <p class="dica">Segure o botão por 1 segundo para enviar. Soltar antes cancela.</p>
       <div class="tipos">
         <button type="button" class="segurar" data-tipo="Parado"><span>Trem parado</span></button>
@@ -128,27 +142,20 @@
       </div>
       <button id="btnSos" class="sos segurar" type="button"><span>Segure para compartilhar minha localização</span></button>
       <p id="sosStatus" class="status" role="status"></p>
+      <p id="sosLink" class="sos-link" hidden><a href="#" target="_blank" rel="noopener"></a></p>
       <h3>Contatos de emergência</h3>
       <ul id="contatos" class="contatos"></ul>
+      <details class="novo-contato">
+      <summary>Adicionar contato</summary>
       <form id="formContato" class="novo">
         <label class="campo">Telefone com DDD
           <input id="novoContato" type="tel" inputmode="tel" autocomplete="tel" placeholder="21 99999-0000">
         </label>
         <button type="submit" class="secundario">Adicionar contato</button>
       </form>
+      </details>
       <p class="dica">Os contatos ficam só neste celular. O Malha Viva não recebe esses números.</p>
 
-      <details class="privacidade">
-        <summary>Seus dados no Malha Viva</summary>
-        <ul>
-          <li>Com "Estou no trem" ligado, o app envia a sua posição a cada 2 segundos para montar o radar.</li>
-          <li>Ninguém vê a posição de outra pessoa. O radar mostra só o trem: em que ponto da linha está, para onde vai e há quanto tempo foi visto.</li>
-          <li>Você entra sem nome, e-mail ou CPF. O app cria um código anônimo neste celular.</li>
-          <li>Nesta fase de testes, as posições ficam guardadas para calcular os tempos entre as estações. Depois dos testes, elas passam a ser apagadas em 7 dias, e só os tempos médios ficam.</li>
-          <li>Avisos ficam visíveis por 30 minutos, sem dizer quem avisou.</li>
-          <li>Se o app der erro, ele envia a mensagem do erro, a versão do app e o modelo do navegador, para a gente corrigir.</li>
-        </ul>
-      </details>
     </section>
   </main>
 
