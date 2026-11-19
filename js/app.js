@@ -357,11 +357,14 @@ function aoReceber(p                     )       {
   saltosSeguidos = 0;
   ultimoAceito = atual;
   if (reg) {
-    const gap = ultimoBom ? (agora - ultimoBom) / 1000 : 0;
+    const antes = ultimoBom || ultimoAntesDeRecarregar;
+    const gap = antes ? (agora - antes) / 1000 : 0;
     if (gap > SILENCIO_S) reg.silencios.push({ inicio: new Date(ultimoBom).toLocaleTimeString("pt-BR"), s: Math.round(gap) });
     reg.maiorSilencioS = Math.max(reg.maiorSilencioS, Math.round(gap));
     reg.aceitos += 1;
     reg.precisoes.push(Math.round(accuracy));
+    // shortcut: mediana só das últimas 600 posições (~10 min), para o registro salvo a cada 10 s ficar pequeno
+    if (reg.precisoes.length > 600) reg.precisoes.shift();
   }
   const velMs = valido(p.coords.speed, 0, 100);
   if (ramal) {
@@ -380,7 +383,7 @@ function aoReceber(p                     )       {
     $("posStatus").textContent = naLinhaAgora ? "Posição na linha do trem." : "Você parece estar fora da linha do trem.";
     desenharPosicao();
   }
-  if (reg && agora - ultimoBom > 10_000) gravarLocal("mv_viagem", JSON.stringify({ id: idViagem, inicio: reg.inicio, ultimo: agora }                      ));
+  if (reg && agora - ultimaGravacao >= 10_000) salvarViagem(agora); // 19/11: antes só gravava depois de silêncio > 10 s
   ultimoBom = agora;
   if (p.timestamp - ultimaEnfileirada < INTERVALO_MS - 500) return;
   ultimaEnfileirada = p.timestamp;
@@ -569,7 +572,16 @@ async function copiarRegistro()                {
 }
 
 /** A3: a viagem em andamento fica guardada no aparelho; recarregar a página retoma a mesma viagem. */
-                                                                   
+                                                                                   
+let ultimaGravacao = 0;
+let ultimoAntesDeRecarregar = 0; // `ultimo` da viagem retomada: só para medir o silêncio do recarregamento
+
+/** Guarda a viagem e o registro a cada ~10 s: recarregar a página retoma os dois (19/11: o registro zerava). */
+function salvarViagem(agora        )       {
+  if (!reg) return;
+  ultimaGravacao = agora;
+  gravarLocal("mv_viagem", JSON.stringify({ id: idViagem, inicio: reg.inicio, ultimo: agora, reg }                      ));
+}
 const RETOMAR_MAX_MS = 10 * 60_000; // revisão: sem posição boa há mais de 10 min, a pessoa pode já ter saído do trem
 const VIAGEM_MAX_MS = 4 * 3600_000;
 
@@ -577,10 +589,12 @@ function iniciar(retomar              )       {
   if (!("geolocation" in navigator)) { $("posStatus").textContent = "Este navegador não dá acesso à localização."; return; }
   idViagem = retomar?.id ?? "v-" + crypto.randomUUID().slice(0, 8); // código novo a cada viagem
   reg = novoRegistro();
-  if (retomar) { reg.inicio = retomar.inicio; reg.retomadas = 1; }
-  gravarLocal("mv_viagem", JSON.stringify({ id: idViagem, inicio: reg.inicio }                      ));
-  ultimoFix = Date.now(); // conta a espera pela primeira posição; se passar de 20 s, o vigia religa
+  if (retomar) reg = { ...reg, ...retomar.reg, inicio: retomar.inicio, retomadas: (retomar.reg?.retomadas ?? 0) + 1 };
   ultimoBom = 0;
+  // o recarregamento conta como silêncio; `ultimo` pode ser até 10 s antes da última posição boa
+  ultimoAntesDeRecarregar = retomar?.ultimo ?? 0;
+  salvarViagem(Date.now()); // com `ultimo`: recarregar de novo logo depois também retoma
+  ultimoFix = Date.now(); // conta a espera pela primeira posição; se passar de 20 s, o vigia religa
   ultimaPrec = null;
   ultimoReligar = 0;
   ultimoAceito = null;
