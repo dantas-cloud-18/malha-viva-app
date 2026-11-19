@@ -1,10 +1,11 @@
 /** Service Worker: abre sem rede (casca do app em cache) e guarda o último traçado do ramal. */
-const VERSAO = "mv-b93ac347e1"; // trocado pelo build.mjs pelo hash da casca
+const VERSAO = "mv-d8cbd6f1a0"; // trocado pelo build.mjs pelo hash da casca
 const sw = self                                       ;
 // Caminhos relativos à pasta do sw.js: o app funciona na raiz ou numa subpasta (ex.: GitHub Pages).
 const rel = (p        ) => new URL(p, location.href).pathname;
-const CASCA = ["./", "index.html", "estilo.css", "manifest.webmanifest", "icone.svg",
-  "js/app.js", "js/fila.js", "js/idb.js", "js/config.js", "js/ramal.js", "js/supabase.js"].map(rel);
+const CASCA = ["./", "index.html", "privacidade.html", "estilo.css", "manifest.webmanifest", "icone.svg",
+  "icones/apple-touch-icon-180.png", "icones/favicon-32.png", "icones/icone-any-192.png", "icones/icone-maskable-192.png",
+  "js/app.js", "js/fila.js", "js/idb.js", "js/config.js", "js/ramal.js", "js/supabase.js", "js/rastreio.js", "js/regras.js"].map(rel);
 const DADOS = ["base.json"].map(rel); // rede primeiro, cache se offline (o Supabase não passa pelo cache)
 
 sw.addEventListener("install", (ev) => {
@@ -24,7 +25,8 @@ async function redePrimeiro(req         )                    {
   const cache = await caches.open(VERSAO);
   try {
     // prazo de 3 s: com sinal ruim no trem, o fetch ficava pendurado e o app não abria; cai para o cache
-    const r = await fetch(req, { signal: AbortSignal.timeout(3000) });
+    // B3: Safari < 16 (iOS 15) não tem AbortSignal.timeout; sem a checagem, lançava aqui e nunca buscava na rede
+    const r = await fetch(req, { signal: "timeout" in AbortSignal ? AbortSignal.timeout(3000) : undefined });
     if (r.ok) await cache.put(req, r.clone());
     return r;
   } catch {

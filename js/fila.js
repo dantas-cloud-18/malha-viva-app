@@ -25,6 +25,8 @@
                         
                       
                        
+                                                                                                
+                                        
  
 
                          
@@ -42,6 +44,7 @@ export class Fila    {
                    backoffMaxMs        ;
                    travaMaxMs        ;
                    agora              ;
+                   aoRejeitar                          ;
           falhas = 0;
           esperaAte = 0;
           travadaEm = 0;
@@ -54,6 +57,14 @@ export class Fila    {
     this.backoffMaxMs = op.backoffMaxMs ?? 30_000;
     this.travaMaxMs = op.travaMaxMs ?? 30_000;
     this.agora = op.agora ?? Date.now;
+    this.aoRejeitar = op.aoRejeitar ?? (() => {});
+  }
+
+          falhou(e         , r        )         {
+    this.falhas += 1;
+    const espera = Math.min(this.backoffMaxMs, this.backoffMinMs * 2 ** (this.falhas - 1));
+    this.esperaAte = this.agora() + espera;
+    return { ...r, erro: String(e), esperaAte: this.esperaAte };
   }
 
   /** Guarda o item e zera a espera: dado novo chegando é sinal de que vale tentar de novo. */
@@ -85,11 +96,21 @@ export class Fila    {
         try {
           res = await this.enviar(itens.map((i) => i.valor));
         } catch (e) {
-          this.falhas += 1;
-          const espera = Math.min(this.backoffMaxMs, this.backoffMinMs * 2 ** (this.falhas - 1));
-          this.esperaAte = this.agora() + espera;
-          return { ...r, erro: String(e), esperaAte: this.esperaAte };
+          return this.falhou(e, r);
         }
+        if (res === "rejeitado" && itens.length > 1) {
+          // RAS-11: o lote foi recusado; manda 1 a 1 para só a linha ruim sair (antes o lote inteiro sumia)
+          for (const it of itens) {
+            let um                ;
+            try { um = await this.enviar([it.valor]); } catch (e) { return this.falhou(e, r); }
+            await this.armazem.remover([it.chave]);
+            if (um === "ok") r.enviados += 1;
+            else { r.rejeitados += 1; this.aoRejeitar(it.valor); }
+          }
+          this.falhas = 0;
+          continue;
+        }
+        if (res === "rejeitado") this.aoRejeitar(itens[0].valor);
         await this.armazem.remover(itens.map((i) => i.chave));
         this.falhas = 0;
         if (res === "ok") r.enviados += itens.length;

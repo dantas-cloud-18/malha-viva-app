@@ -23,6 +23,7 @@ export class Supabase {
                    guarda        ;
                    http              ;
           sessao                = null;
+  ultimaRecusa = "";
 
                    captcha                              ;
 
@@ -87,7 +88,10 @@ export class Supabase {
     if (r.status === 401) { if (this.sessao) this.sessao.expira_em = 0; throw new ErroTemporario("token vencido"); }
     // 408 (prazo) e 429 (limite de requisições) passam: tentar de novo, não descartar o lote
     if (r.status >= 500 || r.status === 408 || r.status === 429) throw new ErroTemporario("servidor " + r.status);
-    return r.ok ? "ok" : "rejeitado";
+    if (r.ok) return "ok";
+    // RAS-11: guarda a causa da recusa para o registro de erros (o corpo do PostgREST diz a coluna ou a regra)
+    this.ultimaRecusa = `${tabela} ${r.status}: ${(await r.text().catch(() => "")).slice(0, 200)}`;
+    return "rejeitado";
   }
 
   /** Lê uma visão ou tabela pública (sem login). */

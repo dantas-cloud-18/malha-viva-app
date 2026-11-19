@@ -1,6 +1,8 @@
 /** Map-matching e ETA no aparelho (porte de malha/geo.py e malha/eta.py, Fase 3.1). Funciona sem rede. */
 
-                                                                                                                  
+// raio_m e min_parado_s (RAS-33) vêm da calibração; sem eles valem 300 m e 15 s
+                                                                                                                
+                                           
                                                                
                                                                                                                 
 
@@ -14,41 +16,68 @@ export function distanciaM(lat1        , lon1        , lat2        , lon2       
                                                                           
 
 /**
- * A9: km suavizado e "andando" entre uma posição e outra.
- * Cada posição puxa o km previsto com peso pela precisão (10 m pesa ~0,75; 150 m pesa ~0,17).
- * Entre posições, o km avança pela velocidade por até `maxAvancoS` segundos.
+ * RAS-30: filtro de Kalman 1D ao longo da linha (estado: km e velocidade em km/s, + = sentido Central).
+ * Substitui o Suavizador (A9) e o pareceSalto no caminho com base: um só modelo pesa a precisão do GPS,
+ * segue pela velocidade nos buracos e recusa salto pelo resíduo (> 4 desvios). 3 recusas seguidas = o errado
+ * era o estado guardado: recomeça na medida nova.
  */
-export class Suavizador {
+export class FiltroKm {
   km                = null;
-  kmS = 0;          // velocidade em km/s, com sinal (+ = sentido Central)
-          t = 0;    // ms da última posição
-                   maxAvancoS        ;
-  constructor(maxAvancoS = 30) { this.maxAvancoS = maxAvancoS; }
+  v = 0;            // km/s, com sinal
+  t = 0;            // ms da última medida aceita
+          p                                   = [0, 0, 0, 0]; // covariância [kk, kv, vk, vv]
+          recusas = 0;
+                   q        ;
+  constructor(acelMs2 = 0.6) { this.q = (acelMs2 / 1000) ** 2; }
 
-  atualizar(km        , precM        , t        , velMs               )       {
-    if (this.km == null || t - this.t > 120_000) { this.km = km; this.t = t; this.kmS = 0; return; }
-    const dt = Math.max(0.001, (t - this.t) / 1000);
-    const previsto = this.km + this.kmS * dt;
-    const peso = 1 / (1 + precM / 30);
-    const novo = previsto + peso * (km - previsto);
-    const kmSMedida = (novo - this.km) / dt;
-    // velocidade do GPS (sem sinal) dá o módulo; o km dá o sinal
-    const kmS = velMs != null && Math.abs(kmSMedida) > 1e-6 ? Math.sign(kmSMedida) * velMs / 1000 : kmSMedida;
-    this.kmS = 0.6 * this.kmS + 0.4 * kmS;
-    this.km = novo;
-    this.t = t;
+          recomecar(km        , precM        , t        )       {
+    this.km = km; this.t = t; this.v = 0; this.recusas = 0;
+    this.p = [(Math.max(precM, 5) / 1000) ** 2, 0, 0, 0.03 ** 2];
   }
 
-  /** km para mostrar agora (avança pela velocidade, no máximo `maxAvancoS` s depois da última posição). */
-  agora(t        )                {
+  /** true = aceita; false = recusada como salto. */
+  atualizar(z        , precM        , t        , velMs               )          {
+    if (this.km == null || t - this.t > 120_000 || t < this.t) { this.recomecar(z, precM, t); return true; }
+    const dt = Math.max(0.001, (t - this.t) / 1000);
+    let km = this.km + this.v * dt, v = this.v;
+    let [a, b, c, d] = this.p;
+    const q = this.q;
+    a += dt * (b + c) + dt * dt * d + q * dt ** 4 / 4;
+    b += dt * d + q * dt ** 3 / 2;
+    c += dt * d + q * dt ** 3 / 2;
+    d += q * dt * dt;
+    const r = (Math.max(precM, 5) / 1000) ** 2;
+    const y = z - km, s = a + r;
+    if ((y * y) / s > 16) {
+      if (++this.recusas < 3) return false;
+      this.recomecar(z, precM, t);
+      return true;
+    }
+    this.recusas = 0;
+    const k0 = a / s, k1 = c / s;
+    km += k0 * y; v += k1 * y;
+    [a, b, c, d] = [a - k0 * a, b - k0 * b, c - k1 * a, d - k1 * b];
+    // velocidade do GPS: dá o módulo (sem sinal); o sinal vem do estado, e só quando ele já é confiável
+    // (|v| > 2 desvios): senão um 1º ponto ruim travava o sentido errado. Abaixo de 0,5 m/s = parado.
+    if (velMs != null && (velMs < 0.5 || Math.abs(v) > 2 * Math.sqrt(d))) {
+      const zv = velMs < 0.5 ? 0 : Math.sign(v) * velMs / 1000;
+      const sv = d + (1 / 1000) ** 2, yv = zv - v, g0 = b / sv, g1 = d / sv;
+      km += g0 * yv; v += g1 * yv;
+      [a, b, c, d] = [a - g0 * c, b - g0 * d, c - g1 * c, d - g1 * d];
+    }
+    this.km = km; this.v = v; this.t = t; this.p = [a, b, c, d];
+    return true;
+  }
+
+  /** km previsto em `t`, andando pela velocidade por até `maxS` segundos. */
+  prever(t        , maxS = 120)                {
     if (this.km == null) return null;
-    const dt = Math.min(this.maxAvancoS, Math.max(0, (t - this.t) / 1000));
-    return this.km + this.kmS * dt;
+    return this.km + this.v * Math.min(maxS, Math.max(0, (t - this.t) / 1000));
   }
 
   /** +1 indo para a Central, -1 para Santa Cruz, 0 parado ou sem dado (abaixo de ~7 km/h). */
   sentido()             {
-    return Math.abs(this.kmS) < 0.002 ? 0 : (this.kmS > 0 ? 1 : -1);
+    return Math.abs(this.v) < 0.002 ? 0 : (this.v > 0 ? 1 : -1);
   }
 }
 
@@ -71,9 +100,10 @@ export class DetectorParada {
     if (velMs < 1) {
       this.rapidoDesde = null;
       this.lentoDesde ??= t;
-      if (!this.atual && t - this.lentoDesde >= 15_000) {
-        const e = this.estacoes.reduce((a, b) => (Math.abs(b.km - km) < Math.abs(a.km - km) ? b : a), this.estacoes[0]);
-        if (e && Math.abs(e.km - km) <= 0.3) {
+      const e = this.estacoes.reduce((a, b) => (Math.abs(b.km - km) < Math.abs(a.km - km) ? b : a), this.estacoes[0]);
+      // RAS-33: raio e tempo mínimo por estação, quando a calibração der
+      if (!this.atual && e && t - this.lentoDesde >= (e.min_parado_s ?? 15) * 1000) {
+        if (Math.abs(e.km - km) <= (e.raio_m ?? 300) / 1000) {
           this.atual = { estacao: e.nome, chegada: this.lentoDesde, saida: null };
           this.paradas.push(this.atual);
           return this.atual;
@@ -123,9 +153,11 @@ export class Ramal {
    * Com `kmPerto` (A7, mapa com memória): procura só a ±`janelaKm` do km anterior, para o km não pular
    * para o outro lado de uma volta da linha (ex.: perto de Deodoro). Se ali ficar longe demais, busca na linha toda.
    */
-  projetar(lat        , lon        , kmPerto         , janelaKm = 2, distMax = 300)                                {
+  projetar(lat        , lon        , kmPerto         , janelaKm = 2, distMax = 300, sentido             = 0)                                {
     if (kmPerto != null) {
-      const p = this.projetarEntre(lat, lon, kmPerto - janelaKm, kmPerto + janelaKm);
+      // RAS-31: andando num sentido, a janela quase não olha para trás (300 m): o km não volta numa volta da linha
+      const tras = 0.3;
+      const p = this.projetarEntre(lat, lon, kmPerto - (sentido === 1 ? tras : janelaKm), kmPerto + (sentido === -1 ? tras : janelaKm));
       if (p.distM <= distMax) return p;
     }
     return this.projetarEntre(lat, lon, -Infinity, Infinity);
@@ -138,12 +170,12 @@ export class Ramal {
       if (this.base.linha[i + 1][2] < kmMin || this.base.linha[i][2] > kmMax) continue;
       const [ax, ay] = this.xy[i], [bx, by] = this.xy[i + 1];
       const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
-      const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
+      const k0 = this.base.linha[i][2], k1 = this.base.linha[i + 1][2], dk = k1 - k0 || 1e-9;
+      // segmento que cruza a borda da janela: só a parte dentro dela conta (RAS-31)
+      const tMin = Math.max(0, (kmMin - k0) / dk), tMax = Math.min(1, (kmMax - k0) / dk);
+      const t = Math.max(tMin, Math.min(tMax, ((px - ax) * dx + (py - ay) * dy) / l2));
       const d = Math.hypot(px - (ax + t * dx), py - (ay + t * dy));
-      if (d < melhor.distM) {
-        const k0 = this.base.linha[i][2], k1 = this.base.linha[i + 1][2];
-        melhor = { km: k0 + t * (k1 - k0), distM: d };
-      }
+      if (d < melhor.distM) melhor = { km: k0 + t * (k1 - k0), distM: d };
     }
     return melhor;
   }
@@ -158,6 +190,24 @@ export class Ramal {
 
   estacao(nome        )                      {
     return this.base.estacoes.find((e) => e.nome === nome);
+  }
+
+  /** Próxima estação à frente de `km` no `sentido` (undefined depois do terminal). */
+  proximaEstacao(km        , sentido        )                      {
+    return this.base.estacoes.filter((e) => (e.km - km) * sentido > 0.05).sort((a, b) => (a.km - b.km) * sentido)[0];
+  }
+
+  /** RAS-12 / RAS-34: km andando pela velocidade, sem passar da próxima estação depois de `km0`. */
+  limitarNaEstacao(km0        , kmPrevisto        , sentido            )         {
+    if (!sentido) return kmPrevisto;
+    const prox = this.proximaEstacao(km0, sentido);
+    if (!prox) return km0; // depois do terminal: não estima
+    return sentido > 0 ? Math.min(kmPrevisto, prox.km) : Math.max(kmPrevisto, prox.km);
+  }
+
+  /** Perto de alguma estação (RAS-32)? */
+  pertoDeEstacao(km        , raioKm        )          {
+    return this.base.estacoes.some((e) => Math.abs(e.km - km) <= raioKm);
   }
 
   /** Segundos até chegar a `destino` saindo de `km` no `sentido` (+1 Central, -1 Santa Cruz). null se já passou. */

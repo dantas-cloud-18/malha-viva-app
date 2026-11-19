@@ -101,7 +101,9 @@ button, .ligar a, .contato { font: inherit; min-height: 56px; border-radius: var
 .principal[data-gps="procurando"] .anel .feito { stroke: var(--aceso); }
 .principal[data-gps="ok"] { background: #14532D; color: #F6F4EC; box-shadow: inset 0 0 0 4px var(--aceso); }
 .principal[data-gps="ok"] .anel .feito { stroke: var(--aceso); stroke-dashoffset: 0; }
-.principal[data-gps="ok"] .anel .no { fill: var(--aceso); animation: piscar 2s ease-in-out infinite; }
+.principal[data-gps="ok"] .anel .no { fill: var(--aceso); }
+/* FRO-61: pisca uma vez a cada posição boa (era sem parar) */
+.principal .anel .no.pulso { animation: piscar 0.9s ease-in-out 1; }
 .principal[data-gps="calado"] { background: var(--perigo); color: #fff; }
 .principal[data-gps="calado"] .anel .feito { stroke: #fff; }
 
@@ -159,12 +161,18 @@ select, input { font: inherit; min-height: 54px; padding: 8px 12px; border-radiu
 .faixa .terminal .nome { font-weight: 700; }
 .faixa .eu { color: var(--marca); font-family: var(--titulo); font-weight: 700; }
 .faixa .eu::before { content: ""; position: absolute; left: -35px; width: 26px; height: 26px; border-radius: 50%;
-  background: var(--aceso); border: 4px solid var(--marca); animation: acender 2s ease-out infinite; }
+  background: var(--aceso); border: 4px solid var(--marca); animation: acender 2s ease-out 3; } /* FRO-61: 3 vezes, não sem parar */
+.faixa .eu.estimado::before { background: transparent; border-style: dashed; animation: none; }
 .faixa .trem { font-weight: 700; }
 .faixa .trem::before { content: ""; position: absolute; left: -35px; width: 26px; height: 18px; border-radius: 6px;
   background: var(--marca); border: 3px solid var(--aceso); }
 .faixa .trem.estimado { font-weight: 500; color: var(--suave); }
 .faixa .trem.estimado::before { background: transparent; border-style: dashed; border-color: var(--marca); }
+/* FRO-52: o trem envelhece na tela; o texto diz a idade (a cor não é a única pista) */
+.faixa .trem.velho { opacity: 0.75; }
+.faixa .trem.antigo { opacity: 0.55; font-weight: 500; color: var(--suave); }
+.faixa .trem.antigo::before { background: var(--trilho-vazio); border-color: var(--suave); }
+.faixa .trem.aproximado::before { border-style: dotted; }
 .aviso { font-size: 0.85rem; font-weight: 700; padding: 2px 8px; border-radius: 6px; border: 2px dashed var(--sinal); color: var(--tinta); }
 .aviso.confirmado { background: var(--sinal); border-style: solid; color: var(--sinal-tinta); }
 
@@ -225,7 +233,7 @@ select, input { font: inherit; min-height: 54px; padding: 8px 12px; border-radiu
 
 /* Nota 3 · P4: privacidade */
 .privacidade { margin-top: 24px; padding: 12px 14px; border-radius: var(--raio); border: var(--b) solid var(--trilho-vazio); background: var(--superficie); }
-.privacidade summary { font-family: var(--titulo); font-weight: 700; cursor: pointer; min-height: 32px; }
+.privacidade summary { font-family: var(--titulo); font-weight: 700; cursor: pointer; min-height: 44px; display: flex; align-items: center; } /* FRO-14 */
 .privacidade ul { margin: 10px 0 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--suave); font-size: 0.95rem; }
 
 /* revisão: GPS bom, mas fora da linha do trem */
@@ -242,10 +250,27 @@ select, input { font: inherit; min-height: 54px; padding: 8px 12px; border-radiu
 .eta.vazio { font-family: var(--texto); font-size: 1rem; font-weight: 400; color: var(--suave); }
 .onde { font-weight: 700; color: var(--marca); margin: 4px 0 8px; }
 .onde:empty { display: none; }
-.faixa .resumo { min-height: 40px; }
-.faixa .resumo button { min-height: 40px; padding: 0 12px; border: var(--b) dashed var(--borda); background: transparent; color: var(--suave); font-weight: 700; border-radius: 10px; }
+.faixa .resumo { min-height: 44px; }
+.faixa .resumo button { min-height: 44px; padding: 0 12px; border: var(--b) dashed var(--borda); background: transparent; color: var(--suave); font-weight: 700; border-radius: 10px; }
 #diag details > summary, .novo-contato > summary { font-family: var(--titulo); font-weight: 700; cursor: pointer; min-height: 44px; display: flex; align-items: center; }
 #diag[data-estado="alerta"] summary { color: var(--perigo); }
 .sos-link { margin: 4px 0 8px; font-weight: 700; }
 .sos-link a { color: var(--tinta); }
 .novo-contato { margin-top: 12px; }
+
+/* Fases 1 e 5 (19/11) */
+.alarme { margin: 8px 0; padding: 14px; border-radius: var(--raio); background: var(--sinal); color: var(--sinal-tinta);
+  font-family: var(--titulo); font-size: 1.2rem; font-weight: 700; } /* FRO-54 */
+.retomar { display: grid; gap: 10px; } /* RAS-15 */
+.retomar p { margin: 0; font-weight: 700; }
+.eta.espera { font-size: 1.15rem; } /* FRO-53 */
+.termo { max-width: min(560px, calc(100vw - 32px)); border: var(--b) solid var(--marca); border-radius: var(--raio);
+  background: var(--superficie); color: var(--tinta); padding: 18px; } /* FRO-56 */
+.termo::backdrop { background: rgba(0, 0, 0, 0.55); }
+.termo form { display: grid; gap: 10px; }
+.termo p { margin: 0; }
+.principal-sec { border: 0; background: #157A3A; color: #fff; font-weight: 700; font-family: var(--titulo); font-size: 1.1rem; }
+.pagina-texto { max-width: 680px; margin: 0 auto; padding: 16px 16px 48px; line-height: 1.5; }
+.pagina-texto h1 { font-size: 1.5rem; color: var(--marca); }
+.pagina-texto ul { padding-left: 1.2em; display: grid; gap: 6px; }
+.pagina-texto a { color: var(--tinta); font-weight: 700; }

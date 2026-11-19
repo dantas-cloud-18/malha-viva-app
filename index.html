@@ -6,10 +6,13 @@
   <meta name="theme-color" content="#14532D">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="Malha Viva">
+  <!-- FRO-59: só o que o app usa. Supabase (dados), Cloudflare (CAPTCHA), unpkg (mapa), OSM (blocos do mapa), Google Fonts -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' https://challenges.cloudflare.com https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; font-src 'self' https://fonts.gstatic.com; img-src 'self' data: https://tile.openstreetmap.org https://unpkg.com; connect-src 'self' https://kqoyjnvokmlufmeioyxd.supabase.co https://challenges.cloudflare.com; frame-src https://challenges.cloudflare.com; worker-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'">
   <title>Malha Viva</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icone.svg" type="image/svg+xml">
-  <link rel="apple-touch-icon" href="icone.svg">
+  <link rel="icon" href="icones/favicon-32.png" type="image/png" sizes="32x32">
+  <link rel="apple-touch-icon" href="icones/apple-touch-icon-180.png">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link rel="stylesheet" crossorigin="anonymous" href="https://fonts.googleapis.com/css2?family=Atkinson+Hyperlegible:wght@400;700&family=Space+Grotesk:wght@500;700&display=swap">
@@ -37,7 +40,7 @@
   </fieldset>
 
   <div id="guiaIphone" class="guia" role="dialog" aria-labelledby="t-guia" hidden>
-    <h2 id="t-guia">Use o Malha Viva como app no iPhone</h2>
+    <h2 id="t-guia" tabindex="-1">Use o Malha Viva como app no iPhone</h2>
     <ol>
       <li>Toque em <strong>Compartilhar</strong> no Safari e depois em <strong>Adicionar à Tela de Início</strong>.</li>
       <li>Em Ajustes › Privacidade › Serviços de Localização › Sites do Safari, deixe <strong>Durante o uso</strong> e <strong>Localização Precisa</strong> ligada.</li>
@@ -49,6 +52,13 @@
   <main>
     <section data-aba="radar" aria-labelledby="t-radar">
       <h2 id="t-radar" class="sr">Radar do ramal</h2>
+      <button id="btnBase" class="secundario" type="button" hidden>Tentar carregar o ramal de novo</button>
+
+      <div id="retomar" class="bloco retomar" role="region" aria-labelledby="retomarTexto" hidden>
+        <p id="retomarTexto"></p>
+        <button id="btnRetomar" class="secundario" type="button">Continuar essa viagem</button>
+        <button id="btnOutra" class="secundario" type="button">Não, esquecer</button>
+      </div>
 
       <button id="btnTrem" class="principal" type="button" aria-pressed="false" data-gps="off">
         <svg class="anel" viewBox="0 0 44 44" aria-hidden="true">
@@ -60,6 +70,7 @@
       </button>
       <p class="dica">Toque para começar. Deixe esta tela aberta durante a viagem: no iPhone, o envio para quando a tela apaga.</p>
       <p id="posStatus" class="status" role="status"></p>
+      <p id="alarme" class="alarme" role="alert" hidden></p>
       <button id="btnTrocarSentido" class="secundario aviso-sentido" type="button" hidden></button>
 
       <div class="chegada">
@@ -74,6 +85,14 @@
           </div>
         </div>
       </div>
+
+      <section class="bloco" id="blocoEspera" aria-labelledby="t-espera" hidden>
+        <h2 id="t-espera">Esperando na estação?</h2>
+        <label class="campo">Estou em
+          <select id="minhaEstacao"></select>
+        </label>
+        <p id="proximoTrem" class="eta espera" role="status" aria-live="polite"></p>
+      </section>
 
       <section class="bloco" id="blocoChegadas" aria-labelledby="t-chegadas" hidden>
         <h2 id="t-chegadas">Próximas estações</h2>
@@ -90,13 +109,15 @@
       <details class="privacidade">
         <summary>Seus dados no Malha Viva</summary>
         <ul>
-          <li>Com "Estou no trem" ligado, o app envia a sua posição a cada 2 segundos para montar o radar.</li>
-          <li>Ninguém vê a posição de outra pessoa. O radar mostra só o trem: em que ponto da linha está, para onde vai e há quanto tempo foi visto.</li>
+          <li>Com "Estou no trem" ligado, o app envia a sua posição a cada 2 a 5 segundos, só quando você está perto da linha do trem. Longe da linha (em casa, na rua), nada é enviado.</li>
+          <li>O radar mostra o trem, sem dizer quem está nele. Com só uma pessoa no trem, mostra apenas entre quais estações ele está.</li>
           <li>Você entra sem nome, e-mail ou CPF. O app cria um código anônimo neste celular.</li>
-          <li>Nesta fase de testes, as posições ficam guardadas para calcular os tempos entre as estações. Depois dos testes, elas passam a ser apagadas em 7 dias, e só os tempos médios ficam.</li>
+          <li>Nesta fase de testes, as posições ficam guardadas para calcular os tempos entre as estações. A limpeza automática (7 dias) começa quando os testes terminarem; até lá, a gente avisa aqui.</li>
           <li>Avisos ficam visíveis por 30 minutos, sem dizer quem avisou.</li>
           <li>Se o app der erro, ele envia a mensagem do erro, a versão do app e o modelo do navegador, para a gente corrigir.</li>
+          <li>Outros serviços que recebem o endereço de internet do seu celular: Google Fonts (letras), Cloudflare (CAPTCHA no primeiro uso) e, só se você abrir o mapa, unpkg e OpenStreetMap.</li>
         </ul>
+        <p><a href="privacidade.html">Termo de uso e privacidade completos</a></p>
       </details>
 
       <section class="bloco" id="diag" aria-label="Detalhes do GPS" data-estado="ok" hidden>
@@ -130,7 +151,7 @@
         <button type="button" class="segurar" data-tipo="Inseguro"><span>Situação de risco</span></button>
       </div>
       <p id="avisoStatus" class="status" role="status"></p>
-      <p class="dica">O aviso só aparece como confirmado quando outra pessoa avisa a mesma coisa.</p>
+      <p class="dica">O aviso só aparece como confirmado quando duas pessoas com o "Estou no trem" ligado, perto da estação, avisam a mesma coisa.</p>
     </section>
 
     <section data-aba="sos" aria-labelledby="t-sos" hidden>
@@ -158,6 +179,20 @@
 
     </section>
   </main>
+
+  <dialog id="dlgTermo" class="termo" aria-labelledby="t-termo">
+    <form method="dialog">
+      <h2 id="t-termo">Antes do primeiro aviso</h2>
+      <div id="dlgTermoTexto">
+        <p>Avise só o que você está vendo. Avisos falsos levam à suspensão da conta.</p>
+        <p>Emergência: ligue 190, 192 ou 193 primeiro.</p>
+        <p>O aviso aparece para todos por 30 minutos, sem o seu nome.</p>
+      </div>
+      <p><a href="privacidade.html" target="_blank" rel="noopener">Ler o termo e a privacidade completos</a></p>
+      <button value="aceito" class="principal-sec" type="submit">Aceito as regras</button>
+      <button value="nao" class="secundario" type="submit">Agora não</button>
+    </form>
+  </dialog>
 
   <nav class="abas" aria-label="Seções">
     <button type="button" data-ir="radar">

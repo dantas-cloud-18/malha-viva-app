@@ -2,31 +2,27 @@
 import { TURNSTILE_SITE, VERSAO_TERMO } from "./config.js";
 import { ArmazemMemoria, Fila,                                   } from "./fila.js";
 import { ArmazemIDB } from "./idb.js";
-import { DetectorParada, pareceSalto, Ramal, Suavizador,                                     } from "./ramal.js";
+import { Ramal,                         } from "./ramal.js";
+import { Rastreio,                                } from "./rastreio.js";
+import * as R from "./regras.js";
 import { Supabase } from "./supabase.js";
 
                                                                                                                            
-                                                                                         
-                                                                                 
-// sentido 0 = parado ou ainda sem direção; estimado = buraco de sinal, km avançado pela velocidade (visão 0005)
-                                                                                                     
-                                               
+// sentido 0 = parado; null = ainda sem direção; estimado = buraco de sinal (visão 0005+);
+// aproximado = trem com 1 pessoa, só o trecho (0011, privacidade)
+                                                                                                            
+                                                                     
                                                                  
                                         
+                                                           
 
 const $ =                        (id        ) => document.getElementById(id)     ;
-const INTERVALO_MS = 2_000; // A5: 1 posição a cada 2 s (era 10 s) para medir paradas e trechos; o banco aceita 1 por segundo
-// 200, não 100: no iPhone a precisão passa de 100 m em estação coberta e em corte; descartar tudo isso deixava buracos.
-const PRECISAO_MAX_M = 200; // pior que isso não move o "Você está aqui" nem vai para o servidor
-const VEL_MAX_MS = 33;      // ~120 km/h: acima disso é salto do GPS, não o trem
-const SILENCIO_S = 30;      // linha de diagnóstico fica vermelha e conta um silêncio
-const RELIGAR_S = 20;       // GPS calado por 20 s: o vigia religa o watchPosition
 const TRENS_MS = 10_000; // leitura do radar; 100 pessoas olhando ≈ 36 mil leituras/h, dentro do egress grátis (~1 KB cada)
 const ATRASO_MAX_MS = 6 * 3600_000 - 5 * 60_000; // A8: o banco ignora acima de 6 h; aqui descarta um pouco antes
-const RAIO_LINHA_M = 150;
 const NUM                          = { central: 1, santa_cruz: -1 };
-const TERMO = "Avise só o que você está vendo. Avisos falsos levam à suspensão da conta.\n" +
-  "Emergência: ligue 190, 192 ou 193 primeiro.\n\nAceita estas regras?";
+const NOME                          = { central: "Central", santa_cruz: "Santa Cruz" };
+const ABAS = ["radar", "avisar", "sos"];
+const IOS = /iPhone|iPad|iPod/.test(navigator.userAgent);
 
 // ---------------------------------------------------------------- estado
 let ramal               = null;
@@ -37,8 +33,15 @@ let trens         = [];
 let trensLidosEm = 0;
 let vigia                = null;
 let trava                          = null;
-let ultimaEnfileirada = 0;
-let idViagem = "";
+let versaoApp = "sem-cache";
+let ultimoEnvio = 0;                  // RAS-10
+let ultimoReligar = 0;
+let sentidoErradoDesde = 0;           // A11
+let sentidoManualNaViagem = false;    // RAS-35: a pessoa trocou o sentido nesta viagem
+let recarregarDepois = false;         // A2: versão nova espera o "Parar"
+let rolouParaMim = false;             // crítica: rolar até "você" só uma vez por viagem
+let avisoManual = false;              // crítica: a pessoa escolheu a estação do aviso; não trocar sozinho
+let alarmeDe = "";                    // FRO-54: destino para o qual o alarme já tocou nesta viagem
 
 function lerLocal(k        )                {
   try { return localStorage.getItem(k); } catch { return null; }
@@ -46,6 +49,11 @@ function lerLocal(k        )                {
 function gravarLocal(k        , v        )       {
   try { localStorage.setItem(k, v); } catch { /* modo privado: segue sem guardar */ }
 }
+function apagarLocal(k        )       {
+  try { localStorage.removeItem(k); } catch { /* modo privado */ }
+}
+
+const rastreio = new Rastreio(null, { ler: lerLocal, gravar: gravarLocal, apagar: apagarLocal });
 
 function armazem   (loja        )             {
   return "indexedDB" in self ? new ArmazemIDB   (loja) : new ArmazemMemoria   ();
@@ -80,10 +88,17 @@ const sb = new Supabase({ ler: () => lerLocal("mv_sessao"), gravar: (v) => grava
 
 const filaPos = new Fila         (armazem("posicoes"), async (lote)                          => {
   const frescas = lote.filter((p) => Date.now() - Date.parse(p.t) < ATRASO_MAX_MS);
-  return frescas.length ? sb.inserir("posicoes", frescas) : "rejeitado";
-});
+  // B2: hora do aparelho no envio; o gatilho da 0009 compara com a do servidor e corrige `t` de relógio errado.
+  // As colunas `relogio` (0009), `km_app` e `versao` (0010) precisam estar no banco ANTES de publicar.
+  // Todas as linhas com as mesmas chaves: o PostgREST recusa lote com chaves diferentes (itens de versões antigas na fila).
+  const relogio = new Date().toISOString();
+  return frescas.length
+    ? sb.inserir("posicoes", frescas.map((p) => ({ ...p, km_app: p.km_app ?? null, versao: p.versao ?? versaoApp.slice(0, 20), relogio })))
+    : "rejeitado";
+}, { aoRejeitar: () => void registrarErro(`posição recusada: ${sb.ultimaRecusa}`) });
 
-const filaRel = new Fila        (armazem("relatos"), (lote) => sb.inserir("relatos", lote));
+const filaRel = new Fila        (armazem("relatos"), (lote) => sb.inserir("relatos", lote),
+  { aoRejeitar: () => void registrarErro(`aviso recusado: ${sb.ultimaRecusa}`) });
 
 // Nota 3 · M4: erros do app vão para `erros_app` (versão do cache, aparelho resumido, mensagem). No máximo 5 por abertura.
 let errosEnviados = 0;
@@ -91,19 +106,24 @@ async function registrarErro(msg        )                {
   if (errosEnviados >= 5) return;
   errosEnviados += 1;
   try {
-    const versao = (await caches.keys()).find((k) => k.startsWith("mv-")) ?? "sem-cache";
-    await sb.inserir("erros_app", [{ versao, aparelho: navigator.userAgent.slice(0, 120), mensagem: msg.slice(0, 300) }]);
+    await sb.inserir("erros_app", [{ versao: versaoApp.slice(0, 20), aparelho: navigator.userAgent.slice(0, 120), mensagem: msg.slice(0, 300) }]);
   } catch { /* sem rede: o erro não é guardado (não vale encher a fila) */ }
 }
 addEventListener("error", (e) => void registrarErro(`${e.message} em ${String(e.filename).split("/").pop()}:${e.lineno}`));
 addEventListener("unhandledrejection", (e) => void registrarErro(`promessa: ${(e.reason         )?.message ?? String(e.reason)}`));
 
 async function esvaziarTudo()                {
+  ultimoEnvio = Date.now();
   const [rp] = await Promise.all([filaPos.esvaziar(), filaRel.esvaziar()]);
-  if (reg && (rp.enviados || rp.rejeitados || rp.erro)) { reg.envios += 1; if (rp.erro) reg.errosEnvio += 1; }
+  if (rp.enviados || rp.rejeitados || rp.erro) rastreio.rodadaEnvio(!!rp.erro);
   const n = (await filaPos.tamanho()) + (await filaRel.tamanho());
   $("rede").querySelector(".txt") .textContent = navigator.onLine ? (n ? `${n} na fila` : "Ao vivo") : (n ? `Sem rede, ${n} na fila` : "Sem rede");
   $("rede").dataset.estado = navigator.onLine ? (n ? "fila" : "ok") : "off";
+}
+
+/** RAS-10: envia em lote (5 posições ou 10 s), não a cada posição. O tique cobre o "10 s" sem posição nova. */
+async function agendarEnvio()                {
+  if ((await filaPos.tamanho()) >= R.LOTE_MIN || Date.now() - ultimoEnvio >= R.ENVIO_MAX_MS) await esvaziarTudo();
 }
 
 // ---------------------------------------------------------------- radar (faixa da linha)
@@ -112,22 +132,81 @@ function estacoesNoSentido()            {
   return sentido === "central" ? es.reverse() : es; // destino no topo
 }
 
-function desenharFaixa()       {
-  const ol = $("faixa");
-  ol.replaceChildren();
-  const es = estacoesNoSentido();
-  const porEstacao = new Map                  ();
-  for (const a of alertas) if (a.sentido === NUM[sentido]) porEstacao.set(a.estacao, [...(porEstacao.get(a.estacao) ?? []), a]);
-  // marcas entre estações: os trens do sentido escolhido (e os parados) e a posição do próprio aparelho
-  const marcas                                                  = trens
+function idadeS(iso        )         {
+  return Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+}
+
+function idade(iso        )         {
+  const s = idadeS(iso);
+  return s < 60 ? `${s} s` : `${Math.round(s / 60)} min`;
+}
+
+/** A9 + RAS-12: o trem anda na tela entre uma leitura e outra (até 60 s), sem passar da próxima estação. */
+function kmTremAgora(t      )         {
+  if (!t.sentido || t.aproximado) return t.km;
+  const dt = Math.min(60, Math.max(0, (Date.now() - trensLidosEm) / 1000));
+  const km = t.km + t.sentido * (t.velocidade_kmh || 0) / 3600 * dt;
+  return ramal ? ramal.limitarNaEstacao(t.km, km, t.sentido          ) : km;
+}
+
+/** FRO-52: o trem envelhece na tela (normal, velho, antigo) e o estimado fica tracejado. */
+function classeTrem(t      )         {
+  const s = idadeS(t.visto_em);
+  return "trem" + (t.estimado ? " estimado" : "") + (t.aproximado ? " aproximado" : "") + (s > 90 ? " antigo" : s > 30 ? " velho" : "");
+}
+
+function rotuloTrem(t      )         {
+  const quem = t.pessoas > 1 ? `, ${t.pessoas} pessoas` : "";
+  const s = idadeS(t.visto_em);
+  if (t.aproximado && ramal) {
+    const es = ramal.base.estacoes, i = Ramal.trechoDe(es, t.km);
+    return i >= 0 ? `Trem entre ${es[i].nome} e ${es[i + 1].nome}` : "Trem neste trecho";
+  }
+  if (t.sentido === 0) {
+    const min = t.parado_s != null ? Math.round(t.parado_s / 60) : 0;
+    return `Trem parado${min >= 1 ? ` há ${min} min` : ""}${quem}`;
+  }
+  if (s > 90) return `Trem, último sinal há ${idade(t.visto_em)}${quem}`;
+  return `${t.estimado ? "Trem (posição estimada)" : "Trem"}, visto há ${idade(t.visto_em)}${quem}`;
+}
+
+function marcasDoRadar()          {
+  const ms          = trens
     .filter((t) => t.sentido === 0 || t.sentido === NUM[sentido])
-    .map((t) => ({ km: kmTremAgora(t), classe: "trem" + (t.estimado ? " estimado" : ""), texto: rotuloTrem(t) }));
-  if (meuKm != null) marcas.push({ km: meuKm, classe: "eu", texto: "Você está aqui" });
-  const porTrecho = new Map                       ();
-  for (const m of marcas) {
+    .map((t) => ({ km: kmTremAgora(t), classe: classeTrem(t), texto: rotuloTrem(t) }));
+  if (meuKm != null) ms.push({ km: meuKm, classe: "eu" + (rastreio.estimado() ? " estimado" : ""),
+    texto: rastreio.estimado() ? "Você está aqui (estimado)" : "Você está aqui" });
+  return ms;
+}
+
+/**
+ * FRO-50: a faixa só é refeita quando muda a estrutura (sentido, avisos, em que trecho cada marca está, classes).
+ * A cada segundo, só o texto das marcas muda: o foco do teclado e o leitor de tela não perdem o lugar.
+ */
+let faixaCompleta = false;
+let estruturaFaixa = "";
+function desenharFaixa(forcar = false)       {
+  const ol = $("faixa");
+  const es = estacoesNoSentido();
+  const porTrecho = new Map                 ();
+  for (const m of marcasDoRadar()) {
     const i = Ramal.trechoDe(es, m.km);
     if (i >= 0) porTrecho.set(i, [...(porTrecho.get(i) ?? []), m]);
   }
+  for (const [i, ms] of porTrecho) ms.sort((a, b) => Math.abs(a.km - es[i].km) - Math.abs(b.km - es[i].km));
+  const ordem = es.flatMap((_, i) => porTrecho.get(i) ?? []);
+  const avisosSentido = alertas.filter((a) => a.sentido === NUM[sentido]);
+  const estrutura = JSON.stringify([sentido, faixaCompleta, es.length, avisosSentido.map((a) => [a.estacao, a.tipo, a.pessoas, a.confirmado]),
+    [...porTrecho].map(([i, ms]) => [i, ms.map((m) => m.classe)])]);
+  if (!forcar && estrutura === estruturaFaixa) {
+    ol.querySelectorAll             (".trem, .eu").forEach((el, k) => { if (ordem[k]) texto(el, ordem[k].texto); });
+    marcarFeito(ol);
+    return;
+  }
+  estruturaFaixa = estrutura;
+  ol.replaceChildren();
+  const porEstacao = new Map                  ();
+  for (const a of avisosSentido) porEstacao.set(a.estacao, [...(porEstacao.get(a.estacao) ?? []), a]);
   es.forEach((e, i) => {
     const li = document.createElement("li");
     li.className = "estacao" + (e.terminal ? " terminal" : "");
@@ -142,7 +221,7 @@ function desenharFaixa()       {
       li.append(b);
     }
     ol.append(li);
-    for (const m of (porTrecho.get(i) ?? []).sort((a, b) => Math.abs(a.km - e.km) - Math.abs(b.km - e.km))) {
+    for (const m of porTrecho.get(i) ?? []) {
       const marca = document.createElement("li");
       marca.className = m.classe;
       marca.textContent = m.texto;
@@ -150,7 +229,11 @@ function desenharFaixa()       {
     }
   });
   resumirFaixa(ol);
-  // Nota 2: o trilho se preenche da origem (embaixo) até o nó aceso
+  marcarFeito(ol);
+}
+
+/** Nota 2: o trilho se preenche da origem (embaixo) até o nó aceso. */
+function marcarFeito(ol             )       {
   const eu = ol.querySelector             (".eu");
   if (eu) ol.style.setProperty("--feito-topo", `${eu.offsetTop + eu.offsetHeight / 2}px`);
   else ol.style.removeProperty("--feito-topo");
@@ -165,7 +248,6 @@ function texto(el             , t        )       {
  * Crítica P2: com "você" na faixa, mostra só as estações perto (5 de cada lado), as pontas e as que têm aviso ou trem.
  * O resto vira uma linha "N estações" que abre a faixa inteira.
  */
-let faixaCompleta = false;
 function resumirFaixa(ol             )       {
   const itens = [...ol.children]                 ;
   const euIdx = itens.findIndex((li) => li.classList.contains("eu"));
@@ -182,7 +264,7 @@ function resumirFaixa(ol             )       {
     const b = document.createElement("button");
     b.type = "button";
     b.textContent = `${escondidas.length} ${escondidas.length > 1 ? "estações" : "estação"}: mostrar`;
-    b.addEventListener("click", () => { faixaCompleta = true; desenharFaixa(); });
+    b.addEventListener("click", () => { faixaCompleta = true; desenharFaixa(true); });
     r.append(b);
     escondidas[0].before(r);
     for (const e of escondidas) e.hidden = true;
@@ -196,68 +278,63 @@ function minutos(s        )         {
   return `${Math.max(1, Math.round(s / 60))} min`;
 }
 
-/** Nota 2: barra do trecho atual e tabela das próximas estações. */
+function horaDaqui(seg        )         {
+  return new Date(Date.now() + seg * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
+}
+
+/** Nota 2: barra do trecho atual e tabela das próximas estações. FRO-54: alarme uma estação antes do destino. */
 function atualizarChegadas()       {
   const trecho = $("trecho"), bloco = $("blocoChegadas");
   if (meuKm == null || !ramal) { trecho.hidden = true; bloco.hidden = true; texto($("avisoOnde"), ""); return; }
   const s = NUM[sentido], km = meuKm;
   const es = ramal.base.estacoes;
-  const frente = es.filter((e) => (e.km - km) * s > 0.05).sort((a, b) => (a.km - b.km) * s);
-  const tras = es.filter((e) => (e.km - km) * s <= 0.05).sort((a, b) => (b.km - a.km) * s);
+  const frente = es.filter((e) => (e.km - km) * s > R.ESTACAO_FRENTE_KM).sort((a, b) => (a.km - b.km) * s);
+  const tras = es.filter((e) => (e.km - km) * s <= R.ESTACAO_FRENTE_KM).sort((a, b) => (b.km - a.km) * s);
   const de = tras[0], para = frente[0];
   // crítica P1: o aviso vai, por padrão, para a próxima estação do trecho, não para o destino
   if (para && !avisoManual) $                   ("avisoEstacao").value = para.nome;
   texto($("avisoOnde"), de && para ? `Você está entre ${de.nome} e ${para.nome}. O aviso vai para ${$                   ("avisoEstacao").value}.` : "");
   if (de && para) {
     const p = Math.min(1, Math.max(0, Math.abs(km - de.km) / (Math.abs(para.km - de.km) || 1)));
-    $("trechoDe").textContent = de.nome;
-    $("trechoPara").textContent = para.nome;
+    texto($("trechoDe"), de.nome);
+    texto($("trechoPara"), para.nome);
     $("trechoBarra").style.setProperty("--p", String(p));
     trecho.querySelector(".barra") .setAttribute("aria-valuenow", String(Math.round(p * 100)));
     trecho.hidden = false;
   } else trecho.hidden = true;
   const destino = $                   ("destino").value;
+  // FRO-54: próxima estação = destino → vibra e avisa uma vez por viagem
+  const alarme = $("alarme");
+  if (para && destino && para.nome === destino && alarmeDe !== destino) {
+    alarmeDe = destino;
+    navigator.vibrate?.([300, 150, 300]);
+    alarme.textContent = `Próxima: ${destino}. Prepare-se para descer.`;
+    alarme.hidden = false;
+  } else if (alarme.hidden === false && (!para || para.nome !== destino)) alarme.hidden = true;
   const linhas = frente.slice(0, 5).map((e) => ({ e, seg: ramal .eta(km, s, e.nome) ?? 0 }));
-  const max = Math.max(1, ...linhas.map((l) => l.seg));
-  $("tabChegadas").replaceChildren(...linhas.map((l, i) => {
-    const tr = document.createElement("tr");
-    if (i === 0) tr.className = "proxima";
-    if (l.e.nome === destino) tr.classList.add("destino");
-    const quando = new Date(Date.now() + l.seg * 1000).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-    const td = (t        ) => { const c = document.createElement("td"); c.textContent = t; return c; };
-    const barra = document.createElement("td");
-    barra.innerHTML = `<div class="barra" aria-hidden="true"><span style="--p:${(l.seg / max).toFixed(3)}"></span></div>`;
-    tr.append(td(l.e.nome), td(`${minutos(l.seg)} (${quando})`), barra);
-    return tr;
-  }));
-  bloco.hidden = !linhas.length;
-}
-
-/** A9: o trem anda na tela entre uma leitura e outra (até 60 s), pela velocidade que a visão calculou. */
-function kmTremAgora(t      )         {
-  const dt = Math.min(60, Math.max(0, (Date.now() - trensLidosEm) / 1000));
-  return t.km + t.sentido * (t.velocidade_kmh || 0) / 3600 * dt;
-}
-
-function rotuloTrem(t      )         {
-  const quem = t.pessoas > 1 ? `, ${t.pessoas} pessoas` : "";
-  if (!t.sentido) {
-    const min = t.parado_s != null ? Math.round(t.parado_s / 60) : 0;
-    return `Trem parado${min >= 1 ? ` há ${min} min` : ""}${quem}`;
+  const assinatura = linhas.map((l) => `${l.e.nome}:${Math.round(l.seg / 30)}`).join("|") + destino;
+  if (bloco.dataset.assinatura !== assinatura) { // FRO-50: a tabela também só é refeita quando muda
+    bloco.dataset.assinatura = assinatura;
+    const max = Math.max(1, ...linhas.map((l) => l.seg));
+    $("tabChegadas").replaceChildren(...linhas.map((l, i) => {
+      const tr = document.createElement("tr");
+      if (i === 0) tr.className = "proxima";
+      if (l.e.nome === destino) tr.classList.add("destino");
+      const td = (t        ) => { const c = document.createElement("td"); c.textContent = t; return c; };
+      const barra = document.createElement("td");
+      barra.innerHTML = `<div class="barra" aria-hidden="true"><span style="--p:${(l.seg / max).toFixed(3)}"></span></div>`;
+      tr.append(td(l.e.nome), td(`${minutos(l.seg)} (${horaDaqui(l.seg)})`), barra);
+      return tr;
+    }));
   }
-  return `${t.estimado ? "Trem (posição estimada)" : "Trem"}, visto há ${idade(t.visto_em)}${quem}`;
-}
-
-function idade(iso        )         {
-  const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
-  return s < 60 ? `${s} s` : `${Math.round(s / 60)} min`;
+  bloco.hidden = !linhas.length;
 }
 
 function resumoTrens()       {
   const n = trens.filter((t) => t.sentido === 0 || t.sentido === NUM[sentido]).length;
   const lido = trensLidosEm ? ` Atualizado há ${idade(new Date(trensLidosEm).toISOString())}.` : "";
-  $("trens").textContent = (n ? `${n} ${n > 1 ? "trens" : "trem"} no radar neste sentido.`
-    : "Nenhum trem no radar neste sentido ainda.") + lido;
+  texto($("trens"), (n ? `${n} ${n > 1 ? "trens" : "trem"} no radar neste sentido.`
+    : "Nenhum trem no radar neste sentido ainda.") + lido);
 }
 
 async function carregarTrens()                {
@@ -269,13 +346,37 @@ async function carregarTrens()                {
   resumoTrens();
 }
 
+/**
+ * FRO-53: "Estou na estação". Quem espera na plataforma vê quando chega o próximo trem do radar,
+ * pelos trens que vêm na direção da estação e pelos tempos dos trechos.
+ */
+function atualizarEspera()       {
+  const bloco = $("blocoEspera");
+  bloco.hidden = vigia != null || !ramal;
+  if (bloco.hidden || !ramal) return;
+  const est = $                   ("minhaEstacao").value;
+  const s = NUM[sentido];
+  if (!est) return;
+  let melhor                                  = null;
+  for (const t of trens) {
+    if (t.sentido !== s) continue;
+    const seg = ramal.eta(kmTremAgora(t), s, est);
+    if (seg != null && (!melhor || seg < melhor.seg)) melhor = { seg, t };
+  }
+  texto($("proximoTrem"), melhor
+    ? `Próximo trem no radar: chega em ${est} em cerca de ${minutos(melhor.seg)} (${horaDaqui(melhor.seg)}).`
+      + `${melhor.t.aproximado ? " Posição aproximada." : ` Visto há ${idade(melhor.t.visto_em)}.`}`
+    : `Nenhum trem no radar vindo para ${est} agora. O radar só vê trens com alguém usando o Malha Viva.`);
+}
+
 function preencherSelects()       {
-  for (const id of ["destino", "avisoEstacao"]) {
+  for (const id of ["destino", "avisoEstacao", "minhaEstacao"]) {
     const sel = $                   (id);
     const atual = sel.value;
     sel.replaceChildren(...estacoesNoSentido().map((e) => new Option(e.nome, e.nome)));
     if (atual) sel.value = atual;
     else if (id === "avisoEstacao" && lerLocal("mv_ultima_estacao")) sel.value = lerLocal("mv_ultima_estacao") ; // sem GPS: a última avisada
+    else if (id === "minhaEstacao" && lerLocal("mv_minha_estacao")) sel.value = lerLocal("mv_minha_estacao") ;
   }
 }
 
@@ -285,7 +386,7 @@ function atualizarEta()       {
   atualizarChegadas();
   saida.classList.toggle("vazio", meuKm == null || !destino || !ramal);
   if (meuKm == null || !destino || !ramal) {
-    texto(saida, vigia != null && ultimoBom && !naLinhaAgora ? "Você parece estar fora da linha do trem. A chegada aparece quando a posição cair na linha."
+    texto(saida, vigia != null && rastreio.ultimoBom && !rastreio.naLinha ? "Você parece estar fora da linha do trem. A chegada aparece quando a posição cair na linha."
       : vigia != null ? "Esperando a posição do GPS." : "Quando você estiver no trem, a chegada aparece aqui.");
     return;
   }
@@ -305,34 +406,11 @@ async function prenderTela()                {
   try {
     trava = await navigator.wakeLock?.request("screen") ?? null;
     trava?.addEventListener("release", () => {
-      if (vigia != null && document.visibilityState === "visible") void prenderTela();
+      if (vigia == null) return;
+      rastreio.travaPerdida(); // RAS-13
+      if (document.visibilityState === "visible") void prenderTela();
     });
   } catch { trava = null; }
-}
-
-                                                                            
-                                                                                                                   
-                                                                                                                              
-                                            
-let reg                  = null;
-let ultimoFix = 0;        // hora (ms) da última posição recebida do GPS, boa ou ruim (vigia)
-let ultimoBom = 0;        // hora (ms) da última posição aceita (diagnóstico e silêncios: A6)
-let ultimaPrec                = null; // precisão da última posição recebida, mesmo descartada (A6)
-let ultimoAceito               = null;
-let saltosSeguidos = 0;
-let ultimoReligar = 0;
-let kmBruto                = null;    // km da última posição aceita, para o mapa com memória (A7)
-let naLinhaAgora = false;
-let suave = new Suavizador();
-let detector                        = null;
-let sentidoErradoDesde = 0;           // A11
-let recarregarDepois = false;         // A2: versão nova espera o "Parar"
-let rolouParaMim = false;             // crítica: rolar até "você" só uma vez por viagem
-let avisoManual = false;              // crítica: a pessoa escolheu a estação do aviso; não trocar sozinho
-
-function novoRegistro()           {
-  return { inicio: Date.now(), fixes: 0, aceitos: 0, ruins: 0, saltos: 0, religados: 0, silencios: [], maiorSilencioS: 0,
-    envios: 0, errosEnvio: 0, precisoes: [], paradas: [], retomadas: 0 };
 }
 
 /** Número válido do GPS ou null (o iOS manda NaN ou -1 quando não sabe). */
@@ -341,61 +419,29 @@ function valido(x                           , min        , max        )         
 }
 
 function aoReceber(p                     )       {
-  const agora = Date.now();
-  if (reg) reg.fixes += 1;
-  ultimoFix = agora;
-  const { latitude: lat, longitude: lon, accuracy } = p.coords;
-  ultimaPrec = Math.round(accuracy);
-  if (accuracy > PRECISAO_MAX_M) { if (reg) reg.ruins += 1; return; } // posição ruim não move nem vai para o servidor
-  const atual        = { t: p.timestamp, lat, lon, prec: accuracy };
-  // 3 saltos seguidos = o errado era o ponto guardado, não os novos: aceita e recomeça daqui
-  if (ultimoAceito && pareceSalto(ultimoAceito, atual, VEL_MAX_MS) && saltosSeguidos < 3) {
-    saltosSeguidos += 1;
-    if (reg) reg.saltos += 1;
-    return;
+  const c = p.coords;
+  const pos = rastreio.receber({ t: p.timestamp, lat: c.latitude, lon: c.longitude, prec: c.accuracy,
+    vel: valido(c.speed, 0, 100), rumo: valido(c.heading, 0, 360), alt: valido(c.altitude, -500, 9000) });
+  if (ramal && c.accuracy <= R.PRECISAO_MAX_M) {
+    texto($("posStatus"), rastreio.naLinha ? "Posição na linha do trem." : "Você parece estar fora da linha do trem.");
+    if (rastreio.naLinha) { sentidoAutomatico(); conferirSentido(); pulso(); }
   }
-  saltosSeguidos = 0;
-  ultimoAceito = atual;
-  if (reg) {
-    const antes = ultimoBom || ultimoAntesDeRecarregar;
-    const gap = antes ? (agora - antes) / 1000 : 0;
-    if (gap > SILENCIO_S) reg.silencios.push({ inicio: new Date(ultimoBom).toLocaleTimeString("pt-BR"), s: Math.round(gap) });
-    reg.maiorSilencioS = Math.max(reg.maiorSilencioS, Math.round(gap));
-    reg.aceitos += 1;
-    reg.precisoes.push(Math.round(accuracy));
-    // shortcut: mediana só das últimas 600 posições (~10 min), para o registro salvo a cada 10 s ficar pequeno
-    if (reg.precisoes.length > 600) reg.precisoes.shift();
-  }
-  const velMs = valido(p.coords.speed, 0, 100);
-  if (ramal) {
-    // A7: com posição boa recente, procura o km perto do anterior
-    const dica = kmBruto != null && agora - ultimoBom < 120_000 ? kmBruto : undefined;
-    const proj = ramal.projetar(lat, lon, dica, 2, Math.max(RAIO_LINHA_M, accuracy) * 2);
-    naLinhaAgora = proj.distM <= Math.max(RAIO_LINHA_M, accuracy); // GPS impreciso: o raio cresce com o erro informado
-    if (naLinhaAgora) {
-      kmBruto = proj.km;
-      suave.atualizar(proj.km, accuracy, p.timestamp, velMs);
-      const vel = velMs ?? Math.abs(suave.kmS) * 1000;
-      const mudou = detector?.atualizar(suave.km , vel, p.timestamp);
-      if (mudou && reg && !reg.paradas.includes(mudou)) reg.paradas.push(mudou);
-      conferirSentido();
-    }
-    $("posStatus").textContent = naLinhaAgora ? "Posição na linha do trem." : "Você parece estar fora da linha do trem.";
-    desenharPosicao();
-  }
-  if (reg && agora - ultimaGravacao >= 10_000) salvarViagem(agora); // 19/11: antes só gravava depois de silêncio > 10 s
-  ultimoBom = agora;
-  if (p.timestamp - ultimaEnfileirada < INTERVALO_MS - 500) return;
-  ultimaEnfileirada = p.timestamp;
-  void filaPos.adicionar({ viagem: idViagem, t: new Date(p.timestamp).toISOString(), lat, lon, precisao_m: Math.round(accuracy),
-    velocidade_ms: velMs, rumo: valido(p.coords.heading, 0, 360), altitude_m: valido(p.coords.altitude, -500, 9000) })
-    .then(esvaziarTudo)
+  desenharPosicao();
+  if (pos) void filaPos.adicionar(pos).then(agendarEnvio)
     .catch((e) => void registrarErro(`fila de posições: ${(e         )?.message ?? e}`));
+}
+
+/** FRO-61: o nó do botão pisca uma vez a cada posição boa, em vez de piscar sem parar. */
+function pulso()       {
+  const no = $("btnTrem").querySelector(".anel .no");
+  no?.classList.remove("pulso");
+  void (no                     )?.getBoundingClientRect();
+  no?.classList.add("pulso");
 }
 
 /** A9: o "Você está aqui" anda a cada segundo pela velocidade, entre uma posição e outra. */
 function desenharPosicao()       {
-  meuKm = vigia != null && naLinhaAgora ? suave.agora(Date.now()) : null;
+  meuKm = vigia != null ? rastreio.kmAgora() : null;
   desenharFaixa();
   atualizarEta();
   // crítica P2: na primeira posição na linha, a tela vai até "você" (uma vez por viagem)
@@ -406,9 +452,29 @@ function desenharPosicao()       {
   }
 }
 
+/** Troca o sentido (radio, listas e radar). `pessoa` = a pessoa tocou: o GPS não troca mais sozinho nesta viagem. */
+function mudarSentido(novo         , pessoa         )       {
+  sentido = novo;
+  const r = document.querySelector                  (`input[name=sentido][value=${novo}]`);
+  if (r) r.checked = true;
+  if (pessoa && vigia != null) sentidoManualNaViagem = true;
+  gravarLocal("mv_sentido", sentido);
+  preencherSelects(); desenharFaixa(true); resumoTrens(); atualizarEta();
+}
+
+/** RAS-35: depois de 1 km na linha, o sentido é escolhido pelo GPS (se a pessoa não escolheu nesta viagem). */
+function sentidoAutomatico()       {
+  if (sentidoManualNaViagem) return;
+  const real = rastreio.sentidoPeloTrajeto(1);
+  if (!real || real === NUM[sentido]) return;
+  mudarSentido(real === 1 ? "central" : "santa_cruz", false);
+  sentidoManualNaViagem = true; // uma vez só: daqui em diante, só o botão de sugestão
+  texto($("posStatus"), `Sentido ajustado pelo GPS: indo para ${real === 1 ? "a Central" : "Santa Cruz"}.`);
+}
+
 /** A11: o km dizendo um sentido por 60 s e o usuário marcado no outro → oferece a troca. */
 function conferirSentido()       {
-  const real = suave.sentido();
+  const real = rastreio.filtro.sentido();
   const btn = $("btnTrocarSentido");
   if (real === 0 || real === NUM[sentido]) { sentidoErradoDesde = 0; btn.hidden = true; return; }
   sentidoErradoDesde ||= Date.now();
@@ -419,11 +485,9 @@ function conferirSentido()       {
 }
 
 function trocarSentido()       {
-  const para = $("btnTrocarSentido").dataset.para;
-  const r = document.querySelector                  (`input[name=sentido][value=${para}]`);
-  if (!r) return;
-  r.checked = true;
-  r.dispatchEvent(new Event("change"));
+  const para = $("btnTrocarSentido").dataset.para                       ;
+  if (!para) return;
+  mudarSentido(para, true);
   sentidoErradoDesde = 0;
   $("btnTrocarSentido").hidden = true;
 }
@@ -437,43 +501,41 @@ function ligarGps()       {
 
 function religarGps()       {
   if (vigia == null) return;
-  if (reg) reg.religados += 1;
+  rastreio.religado();
   ligarGps();
 }
 
-function mediana(xs          )                {
-  if (!xs.length) return null;
-  const s = [...xs].sort((a, b) => a - b);
-  return s[Math.floor(s.length / 2)];
-}
-
-/** Roda a cada segundo: diagnóstico, vigia do GPS e posições andando na tela. */
+/** Roda a cada segundo: diagnóstico, vigia do GPS, posições andando na tela e envio em lote. */
 async function tique()                {
   if (document.visibilityState !== "visible") return;
   if (vigia != null || trens.length) desenharPosicao();
   atualizarMapa();
-  const d = $("diag");
+  atualizarEspera();
   estadoBotao();
-  if (!reg) { d.hidden = true; vigiarGps(); return; }
-  d.hidden = false;
-  const bomS = ultimoBom ? Math.round((Date.now() - ultimoBom) / 1000) : null;
   vigiarGps();
+  const d = $("diag");
+  const reg = rastreio.reg;
+  if (!reg) { d.hidden = true; return; }
+  d.hidden = false;
+  const bomS = rastreio.ultimoBom ? Math.round((Date.now() - rastreio.ultimoBom) / 1000) : null;
   const fila = await filaPos.tamanho().catch(() => 0);
+  if (fila && Date.now() - ultimoEnvio >= R.ENVIO_MAX_MS) void esvaziarTudo(); // RAS-10
+  const prec = rastreio.ultimaPrec;
   // Nota 2: cada medida com valor, barra e cor (verde / âmbar / vermelho)
-  linhaDiag("bom", bomS == null ? "esperando" : `há ${bomS} s`, bomS == null ? 1 : Math.min(1, bomS / SILENCIO_S),
-    bomS == null || bomS > SILENCIO_S ? "ruim" : bomS > 10 ? "atencao" : "ok");
-  linhaDiag("prec", ultimaPrec == null ? "–" : `${ultimaPrec} m`, ultimaPrec == null ? 0 : Math.min(1, ultimaPrec / PRECISAO_MAX_M),
-    ultimaPrec == null ? "ok" : ultimaPrec > PRECISAO_MAX_M ? "ruim" : ultimaPrec > 50 ? "atencao" : "ok");
+  linhaDiag("bom", bomS == null ? "esperando" : `há ${bomS} s`, bomS == null ? 1 : Math.min(1, bomS / R.SILENCIO_S),
+    bomS == null || bomS > R.SILENCIO_S ? "ruim" : bomS > 10 ? "atencao" : "ok");
+  linhaDiag("prec", prec == null ? "–" : `${prec} m`, prec == null ? 0 : Math.min(1, prec / R.PRECISAO_MAX_M),
+    prec == null ? "ok" : prec > R.PRECISAO_MAX_M ? "ruim" : prec > 50 ? "atencao" : "ok");
   linhaDiag("fila", `${fila}`, Math.min(1, fila / 30), fila > 30 ? "ruim" : fila > 5 ? "atencao" : "ok");
   linhaDiag("silencios", `${reg.silencios.length}`, Math.min(1, reg.silencios.length / 5), reg.silencios.length ? "atencao" : "ok");
-  d.dataset.estado = vigia != null && (bomS == null || bomS > SILENCIO_S) ? "alerta" : "ok";
+  d.dataset.estado = vigia != null && (bomS == null || bomS > R.SILENCIO_S) ? "alerta" : "ok";
   if (d.dataset.estado === "alerta" && vigia != null && bomS != null) ($("diagDet")                      ).open = true;
 }
 
-/** Vigia: GPS calado por 20 s → religa. Roda antes de qualquer espera do tique (revisão). */
+/** Vigia: GPS calado por 20 s → religa. */
 function vigiarGps()       {
-  const caladoS = (Date.now() - ultimoFix) / 1000;
-  if (vigia != null && caladoS > RELIGAR_S && Date.now() - ultimoReligar > RELIGAR_S * 1000) {
+  const caladoS = (Date.now() - rastreio.ultimoFix) / 1000;
+  if (vigia != null && caladoS > R.RELIGAR_S && Date.now() - ultimoReligar > R.RELIGAR_S * 1000) {
     ultimoReligar = Date.now();
     religarGps();
   }
@@ -483,7 +545,7 @@ function linhaDiag(item        , valor        , p        , nivel                
   const tr = document.querySelector             (`#diag tr[data-item="${item}"]`);
   if (!tr) return;
   tr.dataset.nivel = nivel;
-  tr.querySelector(".valor") .textContent = valor;
+  texto(tr.querySelector             (".valor") , valor);
   tr.querySelector             (".medidor span") .style.setProperty("--p", p.toFixed(3));
 }
 
@@ -491,15 +553,15 @@ function linhaDiag(item        , valor        , p        , nivel                
 function estadoBotao()       {
   const b = $("btnTrem");
   const anel = b.querySelector            (".feito") ;
-  const est = b.querySelector(".estado") ;
-  if (vigia == null) { b.dataset.gps = "off"; anel.style.setProperty("--p", "0"); texto(b.querySelector(".rotulo") , "Estou no trem"); est.textContent = ""; return; }
-  const bomS = ultimoBom ? (Date.now() - ultimoBom) / 1000 : null;
-  if (bomS != null && bomS <= SILENCIO_S && naLinhaAgora) { b.dataset.gps = "ok"; anel.style.setProperty("--p", "1"); }
-  else if (bomS != null && bomS > SILENCIO_S) { b.dataset.gps = "calado"; anel.style.setProperty("--p", "1"); }
-  else if (bomS != null && !naLinhaAgora) { b.dataset.gps = "fora"; anel.style.setProperty("--p", "1"); }
-  else { b.dataset.gps = "procurando"; anel.style.setProperty("--p", String(Math.min(1, (Date.now() - ultimoFix) / 1000 / RELIGAR_S))); }
-  texto(b.querySelector(".rotulo") , "Segure para parar");
-  texto(est               , b.dataset.gps === "ok" ? "Na linha, enviando" : b.dataset.gps === "calado" ? `GPS sem sinal há ${Math.round(bomS ?? 0)} s`
+  const est = b.querySelector             (".estado") ;
+  if (vigia == null) { b.dataset.gps = "off"; anel.style.setProperty("--p", "0"); texto(b.querySelector             (".rotulo") , "Estou no trem"); texto(est, ""); return; }
+  const bomS = rastreio.ultimoBom ? (Date.now() - rastreio.ultimoBom) / 1000 : null;
+  if (bomS != null && bomS <= R.SILENCIO_S && rastreio.naLinha) { b.dataset.gps = "ok"; anel.style.setProperty("--p", "1"); }
+  else if (bomS != null && bomS > R.SILENCIO_S) { b.dataset.gps = "calado"; anel.style.setProperty("--p", "1"); }
+  else if (bomS != null && !rastreio.naLinha) { b.dataset.gps = "fora"; anel.style.setProperty("--p", "1"); }
+  else { b.dataset.gps = "procurando"; anel.style.setProperty("--p", String(Math.min(1, (Date.now() - rastreio.ultimoFix) / 1000 / R.RELIGAR_S))); }
+  texto(b.querySelector             (".rotulo") , "Segure para parar");
+  texto(est, b.dataset.gps === "ok" ? "Na linha, enviando" : b.dataset.gps === "calado" ? `GPS sem sinal há ${Math.round(bomS ?? 0)} s`
     : b.dataset.gps === "fora" ? "GPS ok, fora da linha do trem" : "Procurando o GPS");
 }
 
@@ -537,31 +599,8 @@ function segurar(btn             , acao            , ms = 1000, ativo           
   btn.addEventListener("contextmenu", (ev) => ev.preventDefault()); // toque longo no celular não abre menu
 }
 
-function hora(ms        )         {
-  return new Date(ms).toLocaleTimeString("pt-BR");
-}
-
-function textoRegistro()         {
-  if (!reg) return "Sem viagem registrada.";
-  const min = Math.round((Date.now() - reg.inicio) / 60000);
-  const paradas = reg.paradas.map((p) => p.saida
-    ? `${p.estacao} ${hora(p.chegada)}–${hora(p.saida)} (${Math.round((p.saida - p.chegada) / 1000)} s)`
-    : `${p.estacao} desde ${hora(p.chegada)}`).join("; ");
-  return [
-    `Malha Viva · registro da viagem ${idViagem}`,
-    `Início: ${new Date(reg.inicio).toLocaleString("pt-BR")} · duração: ${min} min · sentido marcado: ${sentido === "central" ? "Central" : "Santa Cruz"}`,
-    `Aparelho: ${navigator.userAgent}`,
-    `Posições do GPS: ${reg.fixes} · aceitas: ${reg.aceitos} · ruins (> ${PRECISAO_MAX_M} m): ${reg.ruins} · saltos: ${reg.saltos}`,
-    `Precisão mediana: ${mediana(reg.precisoes) ?? "–"} m`,
-    `Maior silêncio: ${reg.maiorSilencioS} s · silêncios > ${SILENCIO_S} s: ${reg.silencios.map((s) => `${s.inicio} (${s.s} s)`).join(", ") || "nenhum"}`,
-    `GPS religado pelo vigia: ${reg.religados} vez(es) · rastreamento retomado após recarregar: ${reg.retomadas} vez(es)`,
-    `Rodadas de envio: ${reg.envios} · com erro: ${reg.errosEnvio}`,
-    `Paradas nas estações: ${paradas || "nenhuma detectada"}`,
-  ].join("\n");
-}
-
 async function copiarRegistro()                {
-  const t = textoRegistro();
+  const t = rastreio.texto(NOME[sentido], navigator.userAgent);
   const b = $("btnRegistro");
   try {
     await navigator.clipboard.writeText(t);
@@ -571,44 +610,21 @@ async function copiarRegistro()                {
   } catch { $("posStatus").textContent = t; }
 }
 
-/** A3: a viagem em andamento fica guardada no aparelho; recarregar a página retoma a mesma viagem. */
-                                                                                   
-let ultimaGravacao = 0;
-let ultimoAntesDeRecarregar = 0; // `ultimo` da viagem retomada: só para medir o silêncio do recarregamento
-
-/** Guarda a viagem e o registro a cada ~10 s: recarregar a página retoma os dois (19/11: o registro zerava). */
-function salvarViagem(agora        )       {
-  if (!reg) return;
-  ultimaGravacao = agora;
-  gravarLocal("mv_viagem", JSON.stringify({ id: idViagem, inicio: reg.inicio, ultimo: agora, reg }                      ));
-}
-const RETOMAR_MAX_MS = 10 * 60_000; // revisão: sem posição boa há mais de 10 min, a pessoa pode já ter saído do trem
-const VIAGEM_MAX_MS = 4 * 3600_000;
-
 function iniciar(retomar              )       {
   if (!("geolocation" in navigator)) { $("posStatus").textContent = "Este navegador não dá acesso à localização."; return; }
-  idViagem = retomar?.id ?? "v-" + crypto.randomUUID().slice(0, 8); // código novo a cada viagem
-  reg = novoRegistro();
-  if (retomar) reg = { ...reg, ...retomar.reg, inicio: retomar.inicio, retomadas: (retomar.reg?.retomadas ?? 0) + 1 };
-  ultimoBom = 0;
-  // o recarregamento conta como silêncio; `ultimo` pode ser até 10 s antes da última posição boa
-  ultimoAntesDeRecarregar = retomar?.ultimo ?? 0;
-  salvarViagem(Date.now()); // com `ultimo`: recarregar de novo logo depois também retoma
-  ultimoFix = Date.now(); // conta a espera pela primeira posição; se passar de 20 s, o vigia religa
-  ultimaPrec = null;
+  $("retomar").hidden = true;
+  rastreio.versao = versaoApp;
+  rastreio.iniciar(retomar, () => "v-" + crypto.randomUUID().slice(0, 8)); // código novo a cada viagem
   ultimoReligar = 0;
-  ultimoAceito = null;
-  saltosSeguidos = 0;
-  ultimaEnfileirada = 0; // A13: a primeira posição sai na hora
-  kmBruto = null;
-  naLinhaAgora = false;
-  suave = new Suavizador();
-  detector = ramal ? new DetectorParada(ramal.base.estacoes) : null;
+  ultimoEnvio = 0;          // A13: a primeira posição sai na hora
   sentidoErradoDesde = 0;
+  sentidoManualNaViagem = !!retomar; // na retomada, o sentido já foi decidido
+  avisoManual = false;      // FRO-12: a estação do aviso volta a seguir o trem
+  alarmeDe = "";
+  rolouParaMim = false;
   ligarGps();
   void prenderTela();
   estadoBotao();
-  rolouParaMim = false;
   $("btnTrem").setAttribute("aria-pressed", "true");
   $("btnRegistro").hidden = false;
   if (retomar) $("posStatus").textContent = "Rastreamento retomado depois de recarregar a página.";
@@ -617,30 +633,44 @@ function iniciar(retomar              )       {
 function parar()       {
   if (vigia != null) navigator.geolocation.clearWatch(vigia);
   vigia = null;
-  try { localStorage.removeItem("mv_viagem"); } catch { /* modo privado */ }
+  rastreio.parar();
   void trava?.release();
   trava = null;
-  naLinhaAgora = false;
   estadoBotao();
   $("btnTrem").setAttribute("aria-pressed", "false");
   $("btnTrocarSentido").hidden = true;
+  $("alarme").hidden = true;
   desenharPosicao();
   void tique();
   void esvaziarTudo().finally(() => { if (recarregarDepois) location.reload(); }); // A2: versão nova entra agora
 }
 
-function viagemSalva()                     {
-  try {
-    const v = JSON.parse(lerLocal("mv_viagem") || "null")                      ;
-    const ultimo = v?.ultimo ?? v?.inicio ?? 0;
-    return v && typeof v.id === "string" && Date.now() - v.inicio < VIAGEM_MAX_MS && Date.now() - ultimo < RETOMAR_MAX_MS ? v : null;
-  } catch { return null; }
+/** RAS-15: a viagem salva está velha demais para retomar sozinha: pergunta. */
+function oferecerRetomada(v             )       {
+  const box = $("retomar");
+  const ultimo = v.ultimo ?? v.inicio;
+  texto($("retomarTexto"), `Você tem uma viagem começada às ${new Date(v.inicio).toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}, `
+    + `sem posição há ${Math.round((Date.now() - ultimo) / 60000)} min. Continuar essa viagem?`);
+  box.hidden = false;
+  $("btnRetomar").onclick = () => iniciar(v);
+  $("btnOutra").onclick = () => { rastreio.descartarSalva(); box.hidden = true; };
 }
 
 // ---------------------------------------------------------------- aviso rápido (termo no primeiro aviso)
+/** FRO-56: o termo abre numa caixa com o texto e o link para a página de privacidade (era um confirm()). */
+function perguntarTermo()                   {
+  const dlg = $                   ("dlgTermo");
+  if (typeof dlg.showModal !== "function") return Promise.resolve(confirm($("dlgTermoTexto").innerText + "\n\nAceita?"));
+  return new Promise((ok) => {
+    dlg.returnValue = "";
+    dlg.addEventListener("close", () => ok(dlg.returnValue === "aceito"), { once: true });
+    dlg.showModal();
+  });
+}
+
 async function garantirTermo()                   {
   if (lerLocal("mv_termo") === VERSAO_TERMO) return true;
-  if (!confirm(TERMO)) return false;
+  if (!(await perguntarTermo())) return false;
   try {
     await sb.inserir("aceites_termo", [{ versao: VERSAO_TERMO }]); // "rejeitado" aqui = aceite já gravado antes
   } catch {
@@ -679,6 +709,11 @@ function contatos()           {
   try { return JSON.parse(lerLocal("mv_contatos") || "[]"); } catch { return []; }
 }
 
+/** FRO-11: no iPhone o corpo do SMS vai com "&body="; nos outros, "?body=". */
+function linkSms(tel        , corpo        )         {
+  return `sms:${tel}${IOS ? "&" : "?"}body=${encodeURIComponent(corpo)}`;
+}
+
 function desenharContatos()       {
   const ul = $("contatos");
   ul.replaceChildren();
@@ -690,7 +725,7 @@ function desenharContatos()       {
     a.href = `sms:${tel}`;
     a.addEventListener("click", async (ev) => {
       ev.preventDefault();
-      location.href = `sms:${tel}?body=${encodeURIComponent(await textoSos())}`;
+      location.href = linkSms(tel, await textoSos());
     });
     const x = document.createElement("button");
     x.type = "button";
@@ -711,34 +746,36 @@ function minhaPosicao()                                      {
 async function textoSos()                  {
   const p = await minhaPosicao();
   const onde = p ? `https://maps.google.com/?q=${p.coords.latitude.toFixed(5)},${p.coords.longitude.toFixed(5)}` : "localização indisponível";
-  return `Preciso de ajuda. Estou no trem do ramal Santa Cruz, sentido ${sentido === "central" ? "Central" : "Santa Cruz"}. ${onde}`;
+  return `Preciso de ajuda. Estou no trem do ramal Santa Cruz, sentido ${NOME[sentido]}. ${onde}`;
 }
 
 async function compartilharSos()                {
   $("sosStatus").textContent = "Pegando sua localização…"; // crítica P2: retorno logo depois do gesto
-  const texto = await textoSos();
+  const msg = await textoSos();
   const quando = new Date().toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" });
-  const link = texto.match(/https:\/\/maps\.google\.com\/\?q=[-\d.,]+/)?.[0];
+  const link = msg.match(/https:\/\/maps\.google\.com\/\?q=[-\d.,]+/)?.[0];
   const sl = $("sosLink");
   sl.hidden = !link;
   if (link) { sl.querySelector("a") .href = link; sl.querySelector("a") .textContent = `Sua localização às ${quando}`; }
   $("sosStatus").textContent = link ? `Localização das ${quando} pronta. Escolha para quem mandar.` : "Sem GPS agora. A mensagem vai sem a localização.";
   try {
     if (navigator.share) {
-      await navigator.share({ text: texto });
+      await navigator.share({ text: msg });
       $("sosStatus").textContent = `Localização das ${quando} compartilhada. Segure de novo para mandar outra atualizada.`;
       return;
     }
   } catch { /* o iOS pode negar o compartilhar depois da espera do GPS: tenta copiar */ }
   try {
-    await navigator.clipboard.writeText(texto);
+    await navigator.clipboard.writeText(msg);
     $("sosStatus").textContent = "Mensagem copiada. Cole no WhatsApp ou SMS.";
   } catch {
-    $("sosStatus").textContent = texto;
+    $("sosStatus").textContent = msg;
   }
 }
 
 // ---------------------------------------------------------------- mapa (sob demanda, poupa dados)
+                                                          
+let mapaL                  = null;
 let mapaPronto = false;
 async function abrirMapa()                {
   const caixa = $("mapa");
@@ -758,7 +795,7 @@ async function abrirMapa()                {
   const linha = L.polyline(ramal.base.linha.map(([lat, lon]) => [lat, lon]), { color: "#1E9E4A", weight: 7, opacity: 0.9 }).addTo(m);
   for (const e of ramal.base.estacoes) L.circleMarker([e.lat, e.lon], { radius: e.terminal ? 7 : 5, color: "#14532D", weight: 3, fillColor: "#F6F4EC", fillOpacity: 1 }).bindTooltip(e.nome).addTo(m);
   m.fitBounds(linha.getBounds(), { padding: [16, 16] });
-  mapaL = { L, m, eu: null, trens: L.layerGroup().addTo(m) };
+  mapaL = { L, m, eu: null, trens: [] };
   mapaPronto = true;
   atualizarMapa();
 }
@@ -774,10 +811,7 @@ function pontoNoKm(km        )                          {
   return null;
 }
 
-                                                        
-let mapaL                  = null;
-
-/** Nota 2 · Fase 3: no mapa, você (nó aceso) e os trens (verde-escuro; tracejado quando estimado), a cada segundo. */
+/** Nota 2 · Fase 3 + FRO-51: no mapa, você e os trens. Os marcadores são movidos, não recriados a cada segundo. */
 function atualizarMapa()       {
   if (!mapaL || $("mapa").hidden) return;
   const { L, m } = mapaL;
@@ -788,32 +822,44 @@ function atualizarMapa()       {
   }
   else if (eu) mapaL.eu.setLatLng(eu);
   else if (mapaL.eu) { mapaL.eu.remove(); mapaL.eu = null; }
-  mapaL.trens.clearLayers();
-  for (const t of trens) {
-    const p = pontoNoKm(kmTremAgora(t));
-    if (p) L.circleMarker(p, { radius: 8, color: "#4ADE80", weight: 3, dashArray: t.estimado ? "4 4" : undefined,
-      fillColor: "#14532D", fillOpacity: t.estimado ? 0.4 : 1 }).bindTooltip(rotuloTrem(t)).addTo(mapaL.trens);
-  }
+  const pontos = trens.map((t) => ({ t, p: pontoNoKm(kmTremAgora(t)) })).filter((x) => x.p);
+  while (mapaL.trens.length > pontos.length) mapaL.trens.pop().remove();
+  pontos.forEach(({ t, p }, i) => {
+    const estilo = { radius: 8, color: "#4ADE80", weight: 3, dashArray: t.estimado || t.aproximado ? "4 4" : undefined,
+      fillColor: "#14532D", fillOpacity: t.estimado || t.aproximado || idadeS(t.visto_em) > 30 ? 0.4 : 1 };
+    let mk = mapaL .trens[i];
+    if (!mk) { mk = L.circleMarker(p, estilo).bindTooltip("").addTo(m); mapaL .trens.push(mk); }
+    else { mk.setLatLng(p); mk.setStyle(estilo); }
+    mk.setTooltipContent(rotuloTrem(t));
+  });
 }
 
 // ---------------------------------------------------------------- navegação e início
-function mostrar(aba        )       {
+function abaDaUrl()                {
+  const h = location.hash.slice(1);
+  return ABAS.includes(h) ? h : null;
+}
+
+/** FRO-55: cada aba entra no histórico; o "voltar" do Android troca de aba em vez de fechar o app. */
+function mostrar(aba        , empurrar = false)       {
   for (const s of document.querySelectorAll             ("[data-aba]")) s.hidden = s.dataset.aba !== aba;
   for (const b of document.querySelectorAll             ("[data-ir]")) b.setAttribute("aria-current", String(b.dataset.ir === aba));
   gravarLocal("mv_aba", aba);
+  if (empurrar && location.hash !== `#${aba}`) history.pushState(null, "", `#${aba}`);
 }
 
 function ligar()       {
-  for (const b of document.querySelectorAll             ("[data-ir]")) b.addEventListener("click", () => mostrar(b.dataset.ir ));
+  for (const b of document.querySelectorAll             ("[data-ir]")) b.addEventListener("click", () => mostrar(b.dataset.ir , true));
+  addEventListener("popstate", () => mostrar(abaDaUrl() ?? "radar"));
   for (const b of document.querySelectorAll                  ("input[name=sentido]")) {
     b.checked = b.value === sentido;
-    b.addEventListener("change", () => { sentido = b.value           ; gravarLocal("mv_sentido", sentido); preencherSelects(); desenharFaixa(); resumoTrens(); atualizarEta(); });
+    b.addEventListener("change", () => mudarSentido(b.value           , true));
   }
   // crítica P1: tocar liga; para parar, segurar 1 s (um toque sem querer no trem não encerra a viagem)
   $("btnTrem").addEventListener("click", () => {
     const b = $("btnTrem");
     if (b.dataset.segurou) { delete b.dataset.segurou; return; }
-    if (vigia == null) iniciar(); else $("posStatus").textContent = "Para parar, segure o botão por 1 segundo.";
+    if (vigia == null) { rastreio.descartarSalva(); iniciar(); } else $("posStatus").textContent = "Para parar, segure o botão por 1 segundo.";
   });
   segurar($("btnTrem"), () => parar(), 1000, () => vigia != null);
   document.addEventListener("segurar-cancelado", (ev) => {
@@ -824,13 +870,16 @@ function ligar()       {
     else $("avisoStatus").textContent = msg;
   });
   $("avisoEstacao").addEventListener("change", () => { avisoManual = true; });
-  $("destino").addEventListener("change", () => atualizarEta());
+  $("destino").addEventListener("change", () => { alarmeDe = ""; atualizarEta(); });
+  $("minhaEstacao").addEventListener("change", () => { gravarLocal("mv_minha_estacao", $                   ("minhaEstacao").value); atualizarEspera(); });
   $("btnMapa").addEventListener("click", () => void abrirMapa());
   for (const b of document.querySelectorAll             ("[data-tipo]")) segurar(b, () => void enviarAviso(b.dataset.tipo ));
   segurar($("btnSos"), () => void compartilharSos());
   $("btnSos").addEventListener("pointerdown", () => void minhaPosicao()); // GPS começa já no toque: o compartilhar sai logo após 1 s
   $("btnSol").addEventListener("click", () => modoSol(!document.documentElement.hasAttribute("data-sol")));
-  $("btnGuiaOk").addEventListener("click", () => { $("guiaIphone").hidden = true; gravarLocal("mv_guia", "1"); });
+  $("btnGuiaOk").addEventListener("click", fecharGuia);
+  $("guiaIphone").addEventListener("keydown", (ev) => { if (ev.key === "Escape") fecharGuia(); });
+  $("btnBase").addEventListener("click", () => void carregarBase());
   $                 ("formContato").addEventListener("submit", (ev) => {
     ev.preventDefault();
     const campo = $                  ("novoContato");
@@ -840,10 +889,12 @@ function ligar()       {
     campo.value = "";
     desenharContatos();
   });
-  addEventListener("online", () => { filaPos.liberar(); filaRel.liberar(); void esvaziarTudo(); });
+  addEventListener("online", () => { filaPos.liberar(); filaRel.liberar(); void esvaziarTudo(); if (!ramal) void carregarBase(); });
   addEventListener("offline", () => void esvaziarTudo());
   document.addEventListener("visibilitychange", () => {
-    if (document.visibilityState === "visible") {
+    const visivel = document.visibilityState === "visible";
+    rastreio.visibilidade(visivel); // RAS-13
+    if (visivel) {
       if (vigia != null) { void prenderTela(); religarGps(); } // depois de trocar de app, o watch antigo pode não voltar
       void carregarAlertas(); void carregarTrens(); void esvaziarTudo();
     } else void esvaziarTudo(); // saindo da tela: última tentativa de envio (fetch com keepalive)
@@ -859,31 +910,50 @@ function modoSol(ligado         )       {
   gravarLocal("mv_sol", ligado ? "1" : "");
 }
 
-/** Nota 2: guia de instalação só no iPhone, no Safari (fora do app instalado), até a pessoa tocar em "Entendi". */
+/** Nota 2 + FRO-57: guia só no iPhone, no Safari (fora do app instalado); recebe o foco e fecha com Esc. */
 function mostrarGuia()       {
-  const ios = /iPhone|iPad|iPod/.test(navigator.userAgent);
   const instalado = (navigator                                       ).standalone || matchMedia("(display-mode: standalone)").matches;
-  $("guiaIphone").hidden = !(ios && !instalado && !lerLocal("mv_guia"));
+  const g = $("guiaIphone");
+  g.hidden = !(IOS && !instalado && !lerLocal("mv_guia"));
+  if (!g.hidden) $("t-guia").focus();
+}
+
+function fecharGuia()       {
+  $("guiaIphone").hidden = true;
+  gravarLocal("mv_guia", "1");
+  $("btnTrem").focus();
+}
+
+/** FRO-13: a base do ramal pode falhar sem rede; o botão e a volta da rede tentam de novo, sem recarregar. */
+async function carregarBase()                {
+  try {
+    const sinal = typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(5000) : undefined;
+    ramal = new Ramal(await (await fetch("base.json", { signal: sinal })).json()        );
+    rastreio.usarRamal(ramal);
+    $("ramal").textContent = `Ramal ${ramal.base.ramal}`;
+    $("btnBase").hidden = true;
+    preencherSelects();
+    desenharFaixa(true);
+    atualizarEta();
+  } catch {
+    $("ramal").textContent = "Sem rede e sem dados guardados do ramal.";
+    $("btnBase").hidden = false;
+  }
 }
 
 async function comecar()                {
   ligar();
   modoSol(lerLocal("mv_sol") === "1");
   mostrarGuia();
-  mostrar(lerLocal("mv_aba") || "radar");
+  mostrar(abaDaUrl() ?? lerLocal("mv_aba") ?? "radar");
   desenharContatos();
+  try { versaoApp = (await caches.keys()).find((k) => k.startsWith("mv-")) ?? "sem-cache"; } catch { /* sem cache */ }
+  rastreio.versao = versaoApp;
   setInterval(() => void tique(), 1000);
-  try {
-    ramal = new Ramal(await (await fetch("base.json", { signal: AbortSignal.timeout?.(5000) })).json()        );
-    $("ramal").textContent = `Ramal ${ramal.base.ramal}`;
-  } catch {
-    $("ramal").textContent = "Sem rede e sem dados guardados do ramal.";
-  }
-  preencherSelects();
-  desenharFaixa();
-  atualizarEta();
-  const salva = viagemSalva();
-  if (salva) iniciar(salva); // A3: a página recarregou no meio da viagem
+  await carregarBase();
+  const salva = rastreio.viagemSalva();
+  if (salva?.acao === "retomar") iniciar(salva.v);   // A3: a página recarregou no meio da viagem
+  else if (salva?.acao === "perguntar") oferecerRetomada(salva.v); // RAS-15
   await Promise.all([carregarAlertas(), carregarTrens(), esvaziarTudo()]);
   setInterval(() => { if (document.visibilityState === "visible") void carregarAlertas(); }, 30_000);
   setInterval(() => { if (document.visibilityState === "visible") void carregarTrens(); }, TRENS_MS);
