@@ -15,6 +15,13 @@ export const INTERVALO_PERTO_MS = 2_000;  // a até 500 m de estação ou devaga
 export const INTERVALO_TRECHO_MS = 5_000; // no meio do trecho, andando
 export const PERTO_ESTACAO_KM = 0.5;
 export const LENTO_MS = 4.2;              // ~15 km/h
+// Parada e velocidade do GPS (viagem v-a6dea9d4, 19/11)
+export const VEL_GPS_PREC_MAX_M = 50;     // pior que isso: velocidade do GPS ignorada (dava 0 com o trem a 10 m/s)
+export const VEL_GPS_JANELA_MS = 12_000;  // "parado" do GPS contra o avanço do km nesta janela...
+export const VEL_GPS_AVANCO_M = 40;       // ...de mais que isso = a velocidade do GPS está errada
+export const RAPIDO_ZERA_MS = 3_000;      // só 3 s seguidos acima de 2 m/s zeram a contagem da parada
+export const SILENCIO_PARADA_S = 20;      // silêncio deste tamanho numa estação = parada estimada
+export const SILENCIO_PARADA_MAX_S = 180; // acima disso não dá para dizer onde o trem parou
 // RAS-10: envio em lote
 export const LOTE_MIN = 5;
 export const ENVIO_MAX_MS = 10_000;

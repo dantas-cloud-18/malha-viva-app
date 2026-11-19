@@ -1,4 +1,5 @@
 /** Map-matching e ETA no aparelho (porte de malha/geo.py e malha/eta.py, Fase 3.1). Funciona sem rede. */
+import * as R from "./regras.js";
 
 // raio_m e min_parado_s (RAS-33) vêm da calibração; sem eles valem 300 m e 15 s
                                                                                                                 
@@ -81,22 +82,29 @@ export class FiltroKm {
   }
 }
 
-                                                                                
+/** estimada = o trem passou pela estação num silêncio do GPS; chegada e saída são as bordas do silêncio. */
+                                                                                                    
 
 /**
  * A10: chegada e saída de cada estação. Parado = abaixo de 1 m/s; chegada depois de 15 s parado a até 300 m
- * de uma estação; saída depois de 5 s acima de 2 m/s.
+ * de uma estação; saída depois de 5 s acima de 2 m/s. Um pico curto acima de 2 m/s (ruído do GPS) não zera
+ * a contagem: só 3 s seguidos. Silêncio de 20 s a 3 min sobre uma estação = parada estimada.
  */
 export class DetectorParada {
            paradas           = [];
           lentoDesde                = null;
           rapidoDesde                = null;
           atual                = null;
+          ultimo                                   = null;
                    estacoes           ;
 
   constructor(estacoes           ) { this.estacoes = estacoes; }
 
   atualizar(km        , velMs        , t        )                {
+    const estimada = this.estimar(km, t);
+    this.ultimo = { km, t };
+    // ainda parado depois do silêncio: conta desde o começo dele (a próxima leitura lenta vira parada medida)
+    if (estimada) { this.rapidoDesde = null; this.lentoDesde = velMs < 1 ? estimada.chegada : null; return estimada; }
     if (velMs < 1) {
       this.rapidoDesde = null;
       this.lentoDesde ??= t;
@@ -104,14 +112,20 @@ export class DetectorParada {
       // RAS-33: raio e tempo mínimo por estação, quando a calibração der
       if (!this.atual && e && t - this.lentoDesde >= (e.min_parado_s ?? 15) * 1000) {
         if (Math.abs(e.km - km) <= (e.raio_m ?? 300) / 1000) {
-          this.atual = { estacao: e.nome, chegada: this.lentoDesde, saida: null };
-          this.paradas.push(this.atual);
+          const ant = this.paradas[this.paradas.length - 1];
+          if (ant?.estimada && ant.estacao === e.nome) {
+            // a estimada do silêncio era o começo desta parada: vira medida, com a chegada do silêncio
+            ant.estimada = false; ant.saida = null; this.atual = ant;
+          } else {
+            this.atual = { estacao: e.nome, chegada: this.lentoDesde, saida: null };
+            this.paradas.push(this.atual);
+          }
           return this.atual;
         }
       }
     } else if (velMs > 2) {
-      this.lentoDesde = null;
       this.rapidoDesde ??= t;
+      if (t - this.rapidoDesde >= R.RAPIDO_ZERA_MS) this.lentoDesde = null;
       if (this.atual && t - this.rapidoDesde >= 5_000) {
         this.atual.saida = this.rapidoDesde;
         const fim = this.atual;
@@ -120,6 +134,23 @@ export class DetectorParada {
       }
     }
     return null;
+  }
+
+  /** Silêncio do GPS sobre uma estação (sem parada aberta): a estação mais perto da borda de saída do silêncio. */
+          estimar(km        , t        )                {
+    const u = this.ultimo;
+    if (!u || this.atual) return null;
+    const gapS = (t - u.t) / 1000;
+    if (gapS < R.SILENCIO_PARADA_S || gapS > R.SILENCIO_PARADA_MAX_S) return null;
+    const de = Math.min(u.km, km), ate = Math.max(u.km, km);
+    const perto = this.estacoes.filter((e) => e.km >= de - (e.raio_m ?? 300) / 1000 && e.km <= ate + (e.raio_m ?? 300) / 1000);
+    if (!perto.length) return null;
+    const e = perto.reduce((a, b) => (Math.abs(b.km - km) < Math.abs(a.km - km) ? b : a));
+    const ant = this.paradas[this.paradas.length - 1];
+    if (ant?.estacao === e.nome && ant.saida != null && u.t - ant.saida < 60_000) return null; // já contada
+    const p         = { estacao: e.nome, chegada: u.t, saida: t, estimada: true };
+    this.paradas.push(p);
+    return p;
   }
 }
 

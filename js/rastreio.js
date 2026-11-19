@@ -17,6 +17,8 @@ import * as R from "./regras.js";
                                        
            
                                                                                                        
+                                                                                          
+                                                                 
   
 
                                                                                                    
@@ -28,7 +30,25 @@ const CHAVE = "mv_viagem";
 function novoRegistro(agora        , versao        )           {
   return { inicio: agora, fim: null, fixes: 0, aceitos: 0, ruins: 0, saltos: 0, religados: 0, silencios: [], maiorSilencioS: 0,
     envios: 0, errosEnvio: 0, precisoes: [], paradas: [], retomadas: 0,
-    recarregamentos: [], versao, ocultacoes: 0, ocultoS: 0, travaPerdida: 0 };
+    recarregamentos: [], versao, ocultacoes: 0, ocultoS: 0, travaPerdida: 0, religadosEm: [], ocultasEm: [], travasEm: [] };
+}
+
+// shortcut: só os 50 primeiros eventos de cada tipo, para o registro salvo ficar pequeno; aumentar se precisar
+function anotar(xs          , t        )       { if (xs.length < 50) xs.push(t); }
+
+/**
+ * Velocidade do GPS em que dá para confiar, ou null (usar a do filtro). Com precisão ruim o Android manda
+ * posições pela rede com velocidade 0; e "parado" com o km andando mais de 40 m em 12 s também é erro.
+ * `hist` = km medidos recentes (do mais velho ao mais novo).
+ */
+export function velConfiavel(vel               , prec        , km        , t        , hist                             )                {
+  if (vel == null || prec > R.VEL_GPS_PREC_MAX_M) return null;
+  // abaixo de 2 m/s o detector já conta como "não andando": é aí que o 0 errado do GPS faz parada falsa
+  if (vel < 2) {
+    const velho = hist.find((h) => t - h.t <= R.VEL_GPS_JANELA_MS);
+    if (velho && Math.abs(km - velho.km) * 1000 > R.VEL_GPS_AVANCO_M) return null;
+  }
+  return vel;
 }
 
 export function mediana(xs          )                {
@@ -56,6 +76,7 @@ export class Rastreio {
           antesRecarregar = 0;
           kmBruto                = null;
           ocultaDesde = 0;
+          kmHist                              = [];
   ramal              ;
                    guarda        ;
                    agora              ;
@@ -91,6 +112,7 @@ export class Rastreio {
     this.saltosSemBase = 0;
     this.ultimaEnfileirada = 0;                   // A13: a 1ª posição sai na hora
     this.kmBruto = null;
+    this.kmHist = [];
     this.kmInicio = null;
     this.naLinha = false;
     this.distLinha = null;
@@ -137,6 +159,7 @@ export class Rastreio {
     if (l.prec > R.PRECISAO_MAX_M) { reg.ruins += 1; return null; }
     const ponto        = { t: l.t, lat: l.lat, lon: l.lon, prec: l.prec };
     let kmApp                = null;
+    let velGps = l.vel;
     if (this.ramal) {
       // A7 + RAS-31: perto do km anterior e sem voltar contra o sentido
       const dica = this.kmBruto != null && agora - this.ultimoBom < 120_000 ? this.kmBruto : undefined;
@@ -145,11 +168,14 @@ export class Rastreio {
       this.distLinha = proj.distM;
       this.naLinha = proj.distM <= raio;
       if (this.naLinha) {
-        if (!this.filtro.atualizar(proj.km, l.prec, l.t, l.vel)) { reg.saltos += 1; return null; } // RAS-30
+        velGps = velConfiavel(l.vel, l.prec, proj.km, l.t, this.kmHist);
+        if (!this.filtro.atualizar(proj.km, l.prec, l.t, velGps)) { reg.saltos += 1; return null; } // RAS-30
         this.kmBruto = proj.km;
+        this.kmHist.push({ t: l.t, km: proj.km });
+        while (this.kmHist.length && l.t - this.kmHist[0].t > R.VEL_GPS_JANELA_MS) this.kmHist.shift();
         kmApp = this.filtro.km;
         this.kmInicio ??= kmApp;
-        const vel = l.vel ?? Math.abs(this.filtro.v) * 1000;
+        const vel = velGps ?? Math.abs(this.filtro.v) * 1000;
         const mudou = this.detector?.atualizar(kmApp , vel, l.t);
         if (mudou && !reg.paradas.includes(mudou)) reg.paradas.push(mudou);
       }
@@ -174,7 +200,7 @@ export class Rastreio {
     if (agora - this.ultimaGravacao >= 10_000) this.salvar(agora);
     // B1 (privacidade): longe da linha não vai para o servidor. Sem base não dá para saber: o banco filtra (0009).
     if (this.distLinha != null && this.distLinha > R.LONGE_LINHA_M) return null;
-    if (l.t - this.ultimaEnfileirada < this.intervaloMs(kmApp, l.vel) - 500) return null;
+    if (l.t - this.ultimaEnfileirada < this.intervaloMs(kmApp, velGps) - 500) return null;
     this.ultimaEnfileirada = l.t;
     return { viagem: this.id, t: new Date(l.t).toISOString(), lat: l.lat, lon: l.lon, precisao_m: Math.round(l.prec),
       velocidade_ms: l.vel, rumo: l.rumo, altitude_m: l.alt,
@@ -211,12 +237,12 @@ export class Rastreio {
   visibilidade(visivel         )       {
     if (!this.reg || !this.ligado) return;
     const agora = this.agora();
-    if (!visivel && !this.ocultaDesde) { this.ocultaDesde = agora; this.reg.ocultacoes += 1; }
+    if (!visivel && !this.ocultaDesde) { this.ocultaDesde = agora; this.reg.ocultacoes += 1; anotar(this.reg.ocultasEm, agora); }
     else if (visivel && this.ocultaDesde) { this.reg.ocultoS += Math.round((agora - this.ocultaDesde) / 1000); this.ocultaDesde = 0; }
   }
 
-  travaPerdida()       { if (this.reg && this.ligado) this.reg.travaPerdida += 1; }
-  religado()       { if (this.reg) this.reg.religados += 1; }
+  travaPerdida()       { if (this.reg && this.ligado) { this.reg.travaPerdida += 1; anotar(this.reg.travasEm, this.agora()); } }
+  religado()       { if (this.reg) { this.reg.religados += 1; anotar(this.reg.religadosEm, this.agora()); } }
   rodadaEnvio(erro         )       { if (this.reg) { this.reg.envios += 1; if (erro) this.reg.errosEnvio += 1; } }
 
   /** Texto do "Copiar registro da viagem". */
@@ -225,7 +251,10 @@ export class Rastreio {
     if (!reg) return "Sem viagem registrada.";
     const hora = (ms        ) => new Date(ms).toLocaleTimeString("pt-BR");
     const fim = reg.fim ?? this.agora();
-    const paradas = reg.paradas.map((p) => p.saida
+    const quando = (xs          ) => (xs.length ? ` (${xs.map(hora).join(", ")})` : "");
+    const paradas = reg.paradas.map((p) => p.estimada
+      ? `${p.estacao} estimada, sem GPS entre ${hora(p.chegada)} e ${hora(p.saida ?? p.chegada)}`
+      : p.saida
       ? `${p.estacao} ${hora(p.chegada)}–${hora(p.saida)} (${Math.round((p.saida - p.chegada) / 1000)} s)`
       : `${p.estacao} desde ${hora(p.chegada)}`).join("; ");
     return [
@@ -235,8 +264,8 @@ export class Rastreio {
       `Posições do GPS: ${reg.fixes} · aceitas: ${reg.aceitos} · ruins (> ${R.PRECISAO_MAX_M} m): ${reg.ruins} · saltos: ${reg.saltos}`,
       `Precisão mediana: ${mediana(reg.precisoes) ?? "–"} m`,
       `Maior silêncio: ${reg.maiorSilencioS} s · silêncios > ${R.SILENCIO_S} s: ${reg.silencios.map((s) => `${s.inicio} (${s.s} s)`).join(", ") || "nenhum"}`,
-      `GPS religado pelo vigia: ${reg.religados} vez(es) · retomado após recarregar: ${reg.retomadas} vez(es)${reg.recarregamentos.length ? ` (${reg.recarregamentos.map(hora).join(", ")})` : ""}`,
-      `Tela oculta: ${reg.ocultacoes} vez(es), ${reg.ocultoS} s · trava de tela perdida: ${reg.travaPerdida} vez(es)`,
+      `GPS religado pelo vigia: ${reg.religados} vez(es)${quando(reg.religadosEm)} · retomado após recarregar: ${reg.retomadas} vez(es)${reg.recarregamentos.length ? ` (${reg.recarregamentos.map(hora).join(", ")})` : ""}`,
+      `Tela oculta: ${reg.ocultacoes} vez(es)${quando(reg.ocultasEm)}, ${reg.ocultoS} s · trava de tela perdida: ${reg.travaPerdida} vez(es)${quando(reg.travasEm)}`,
       `Rodadas de envio: ${reg.envios} · com erro: ${reg.errosEnvio}`,
       `Paradas nas estações: ${paradas || "nenhuma detectada"}`,
     ].join("\n");
