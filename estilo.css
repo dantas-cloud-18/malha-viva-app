@@ -1,105 +1,235 @@
-/* Malha Viva · PWA. Paleta da identidade; sinal âmbar de ferrovia para avisos; vermelho só no SOS. */
+/* Malha Viva · PWA (Nota 2). A placa de linha acima da porta do trem, viva: o ramal é o trilho e você é o nó aceso.
+   Cores da identidade; âmbar de sinal ferroviário só para avisos; vermelho só para SOS e falha. */
 :root {
-  --verde-escuro: #14532D;
-  --verde-ramal: #1E9E4A;
-  --verde-aceso: #4ADE80;
-  --fundo: #F6F4EC;
-  --ambar: #E8A100;
-  --perigo: #B42318;
-  --tinta: #14532D;
+  --marca: #14532D;      /* selo, texto da marca, botões */
+  --linha: #1E9E4A;      /* o trilho e o que já foi percorrido */
+  --aceso: #4ADE80;      /* só o que está vivo agora: você, um trem, o GPS ok */
+  --papel: #F6F4EC;
+  --superficie: #FFFFFF;
+  --tinta: #14321F;
   --suave: #4B5E52;
-  --linha-w: 6px;
+  --borda: #14532D;
+  --trilho-vazio: #CFE5D6;
+  --sinal: #E8A100;
+  --sinal-tinta: #1A1300;
+  --perigo: #B42318;
+  --sobre-marca: #F6F4EC;
+  --b: 2px;              /* espessura das bordas (o modo sol engrossa) */
+  --raio: 14px;
+  --texto: "Atkinson Hyperlegible", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --titulo: "Space Grotesk", var(--texto);
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
-  :root { --fundo: #0F2418; --tinta: #E9F5EC; --suave: #A9C2B1; --verde-escuro: #4ADE80; }
+  :root:not([data-sol]) {
+    --marca: #4ADE80; --papel: #0D2116; --superficie: #123020; --tinta: #E9F5EC; --suave: #A9C2B1;
+    --borda: #2F7A4C; --trilho-vazio: #1E4630; --sobre-marca: #0D2116; color-scheme: dark;
+  }
+}
+/* Modo sol forte: preto no branco, bordas grossas, sem transparência (tela perto da janela do trem) */
+:root[data-sol] {
+  --marca: #0B3D20; --linha: #0F7A36; --papel: #FFFFFF; --superficie: #FFFFFF; --tinta: #000000; --suave: #1F2A22;
+  --borda: #000000; --trilho-vazio: #9FC6AE; --b: 3px; color-scheme: light;
 }
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
-  background: var(--fundo);
+  background: var(--papel);
   color: var(--tinta);
-  font: 18px/1.45 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-  padding-bottom: calc(76px + env(safe-area-inset-bottom));
+  font: 18px/1.5 var(--texto);
+  padding-bottom: calc(84px + env(safe-area-inset-bottom));
 }
-.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
-:focus-visible { outline: 3px solid var(--ambar); outline-offset: 2px; }
-
-.topo { display: flex; align-items: center; gap: 12px; padding: 14px 16px 8px; }
-.topo h1 { margin: 0; font-size: 1.35rem; font-weight: 800; letter-spacing: -0.01em; }
-.topo p { margin: 0; color: var(--suave); font-size: 0.95rem; }
-.rede { margin-left: auto; font-size: 0.85rem; padding: 4px 10px; border-radius: 999px; border: 2px solid currentColor; }
-.rede[data-estado="ok"] { color: var(--verde-ramal); }
-.rede[data-estado="fila"] { color: var(--ambar); }
-.rede[data-estado="off"] { color: var(--perigo); }
-
-.sentido { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin: 0; padding: 4px 16px 12px; border: 0; }
-.sentido label { display: flex; align-items: center; justify-content: center; min-height: 52px; padding: 8px;
-  border: 2px solid var(--verde-escuro); border-radius: 12px; font-weight: 700; text-align: center; cursor: pointer; }
-.sentido label { position: relative; }
-.sentido input { position: absolute; opacity: 0; width: 1px; height: 1px; min-height: 0; inset: 0; margin: 0; }
-.sentido label:has(input:checked) { background: var(--verde-escuro); color: var(--fundo); }
-.sentido label:has(input:focus-visible) { outline: 3px solid var(--ambar); }
-
-main { padding: 0 16px; max-width: 560px; margin: 0 auto; }
-h2 { font-size: 1.3rem; margin: 8px 0 12px; }
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+:focus-visible { outline: 3px solid var(--sinal); outline-offset: 2px; }
+h1, h2, h3, .eta, .trecho-nome, .faixa .nome, .tabela th[scope="row"], .chegadas td:first-child { font-family: var(--titulo); }
+h2 { font-size: 1.2rem; margin: 0 0 10px; letter-spacing: -0.01em; }
 h3 { font-size: 1.1rem; margin: 24px 0 8px; }
 
-button, .ligar a, .contato { font: inherit; min-height: 56px; border-radius: 14px; cursor: pointer; }
-.principal { width: 100%; border: 0; background: var(--verde-ramal); color: #fff; font-size: 1.25rem; font-weight: 800; }
-.principal[aria-pressed="true"] { background: var(--verde-escuro); box-shadow: inset 0 0 0 4px var(--verde-aceso); }
-.secundario { width: 100%; margin-top: 12px; background: transparent; color: var(--tinta); border: 2px solid var(--verde-escuro); font-weight: 700; }
+/* ------------------------------------------------------------------ topo */
+.topo { display: grid; grid-template-columns: auto 1fr auto auto; align-items: center; gap: 10px;
+  padding: calc(12px + env(safe-area-inset-top)) 16px 10px; max-width: 600px; margin: 0 auto; }
+.selo { display: block; border-radius: 12px; }
+.marca h1 { margin: 0; font-size: 1.4rem; font-weight: 700; letter-spacing: -0.02em; line-height: 1.1; color: var(--marca); }
+.assinatura { margin: 0; font-size: 0.9rem; color: var(--suave); }
+.ramal { margin: 0; font-size: 0.8rem; color: var(--suave); }
+.rede { display: inline-flex; align-items: center; gap: 6px; font-size: 0.85rem; font-weight: 700; padding: 6px 10px;
+  border-radius: 999px; border: var(--b) solid currentColor; white-space: nowrap; }
+.rede .no { width: 10px; height: 10px; border-radius: 50%; background: currentColor; }
+.rede[data-estado="ok"] { color: var(--linha); }
+.rede[data-estado="ok"] .no { background: var(--aceso); box-shadow: 0 0 0 2px var(--linha); }
+.rede[data-estado="fila"] { color: #8A5A00; }
+.rede[data-estado="fila"] .no { animation: piscar 1.2s ease-in-out infinite; }
+.rede[data-estado="off"] { color: var(--perigo); }
+@media (prefers-color-scheme: dark) { :root:not([data-sol]) .rede[data-estado="fila"] { color: var(--sinal); } }
+.sol { width: 44px; height: 44px; min-height: 44px; padding: 0; border-radius: 50%; border: var(--b) solid var(--borda);
+  background: transparent; color: var(--tinta); display: grid; place-items: center; }
+.sol svg { width: 22px; height: 22px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; }
+.sol[aria-pressed="true"] { background: var(--tinta); color: var(--papel); }
+
+/* ------------------------------------------------------------------ sentido: duas metades de uma mesma placa */
+.sentido { display: grid; grid-template-columns: 1fr 1fr; margin: 0 auto; padding: 0; border: var(--b) solid var(--borda);
+  border-radius: var(--raio); overflow: hidden; max-width: calc(600px - 32px); width: calc(100% - 32px); }
+.sentido label { position: relative; display: flex; align-items: center; justify-content: center; min-height: 54px;
+  padding: 8px; font-weight: 700; text-align: center; cursor: pointer; line-height: 1.2; }
+.sentido label + label { border-left: var(--b) solid var(--borda); }
+.sentido input { position: absolute; opacity: 0; inset: 0; margin: 0; }
+.sentido label:has(input:checked) { background: var(--marca); color: var(--sobre-marca); }
+.sentido label:has(input:focus-visible) { outline: 3px solid var(--sinal); outline-offset: -5px; }
+
+main { padding: 0 16px; max-width: 600px; margin: 0 auto; }
+section[data-aba] { padding-top: 16px; }
+
+/* ------------------------------------------------------------------ botões */
+button, .ligar a, .contato { font: inherit; min-height: 56px; border-radius: var(--raio); cursor: pointer; }
+.secundario { width: 100%; margin-top: 12px; background: transparent; color: var(--tinta); border: var(--b) solid var(--borda); font-weight: 700; }
+.secundario.feito { background: var(--linha); color: #fff; border-color: var(--linha); }
+.aviso-sentido { border-color: var(--sinal); border-style: dashed; }
+
+/* "Estou no trem": o anel se fecha enquanto o GPS procura; o nó acende quando a posição cai na linha */
+.principal { width: 100%; min-height: 68px; display: flex; align-items: center; justify-content: center; gap: 14px;
+  border: 0; background: var(--linha); color: #fff; font-family: var(--titulo); font-size: 1.3rem; font-weight: 700; }
+.anel { width: 40px; height: 40px; flex: none; transform: rotate(-90deg); }
+.anel circle { fill: none; stroke-width: 4; }
+.anel .trilho { stroke: rgba(255, 255, 255, 0.35); }
+.anel .feito { stroke: #fff; stroke-dasharray: 100; stroke-dashoffset: calc(100 - var(--p, 0) * 100); stroke-linecap: round;
+  transition: stroke-dashoffset 0.9s linear; }
+.anel .no { fill: rgba(255, 255, 255, 0.5); stroke: none; }
+/* verde-escuro fixo (não o --marca, que vira verde aceso no modo escuro e apagaria o anel) */
+.principal[data-gps="procurando"] { background: #14532D; color: #F6F4EC; }
+.principal[data-gps="procurando"] .anel .feito { stroke: var(--aceso); }
+.principal[data-gps="ok"] { background: #14532D; color: #F6F4EC; box-shadow: inset 0 0 0 4px var(--aceso); }
+.principal[data-gps="ok"] .anel .feito { stroke: var(--aceso); stroke-dashoffset: 0; }
+.principal[data-gps="ok"] .anel .no { fill: var(--aceso); animation: piscar 2s ease-in-out infinite; }
+.principal[data-gps="calado"] { background: var(--perigo); color: #fff; }
+.principal[data-gps="calado"] .anel .feito { stroke: #fff; }
+
 .dica { color: var(--suave); font-size: 0.95rem; margin: 8px 0; }
-.status { font-weight: 700; min-height: 1.45em; margin: 8px 0; }
-.campo { display: grid; gap: 6px; margin: 16px 0 4px; font-weight: 700; }
-select, input { font: inherit; min-height: 52px; padding: 8px 12px; border-radius: 12px; border: 2px solid var(--verde-escuro);
-  background: var(--fundo); color: var(--tinta); width: 100%; }
-.eta { font-size: 1.2rem; font-weight: 800; }
+.status { font-weight: 700; min-height: 1.5em; margin: 8px 0; }
+.campo { display: grid; gap: 6px; margin: 0 0 4px; font-weight: 700; }
+select, input { font: inherit; min-height: 54px; padding: 8px 12px; border-radius: 12px; border: var(--b) solid var(--borda);
+  background: var(--superficie); color: var(--tinta); width: 100%; }
 
-/* A faixa: a linha do trem como nas placas acima das portas. Destino no topo. */
-.faixa { list-style: none; margin: 20px 0 8px; padding: 0 0 0 34px; position: relative; }
-.faixa::before { content: ""; position: absolute; left: 13px; top: 14px; bottom: 14px; width: var(--linha-w);
-  background: var(--verde-ramal); border-radius: 3px; }
-.faixa li { position: relative; min-height: 44px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; }
-.faixa .estacao::before { content: ""; position: absolute; left: -29px; width: 16px; height: 16px; border-radius: 50%;
-  background: var(--fundo); border: 4px solid var(--verde-escuro); }
-.faixa .terminal::before { border-radius: 4px; }
-.faixa .terminal .nome { font-weight: 800; }
-.faixa .eu { color: var(--verde-escuro); font-weight: 800; }
-.faixa .eu::before { content: ""; position: absolute; left: -33px; width: 24px; height: 24px; border-radius: 50%;
-  background: var(--verde-aceso); border: 4px solid var(--verde-escuro); animation: pulso 2s ease-out infinite; }
-.diag { font-size: 0.85rem; font-variant-numeric: tabular-nums; padding: 6px 10px; border-radius: 8px;
-  border: 2px solid var(--verde-escuro); }
-.diag[data-estado="alerta"] { border-color: #B42318; background: #B42318; color: #FFFFFF; font-weight: 700; }
-.faixa .trem {color: var(--verde-escuro); font-weight: 800; }
-.faixa .trem::before { content: ""; position: absolute; left: -33px; width: 24px; height: 24px; border-radius: 6px;
-  background: var(--verde-escuro); border: 4px solid var(--verde-aceso); }
-@keyframes pulso { 0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, .7); } 100% { box-shadow: 0 0 0 14px rgba(74, 222, 128, 0); } }
-@media (prefers-reduced-motion: reduce) { .faixa .eu::before { animation: none; } }
-.aviso { font-size: 0.85rem; font-weight: 700; padding: 2px 8px; border-radius: 6px; border: 2px dashed var(--ambar); color: var(--tinta); }
-.aviso.confirmado { background: var(--ambar); border-style: solid; color: #1A1300; }
+/* ------------------------------------------------------------------ chegada e trecho atual */
+.chegada, .bloco { margin-top: 16px; padding: 14px; border-radius: var(--raio); background: var(--superficie);
+  border: var(--b) solid var(--trilho-vazio); }
+:root[data-sol] .chegada, :root[data-sol] .bloco { border-color: var(--borda); }
+.eta { font-size: 1.45rem; font-weight: 700; line-height: 1.25; margin: 12px 0 0; letter-spacing: -0.01em; }
+.trecho { margin-top: 12px; }
+.trecho-nome { margin: 0 0 6px; font-weight: 700; display: flex; flex-wrap: wrap; align-items: center; gap: 4px 8px; }
+.trecho-nome .seta { width: 22px; height: 2px; background: var(--linha); position: relative; }
+.trecho-nome .seta::after { content: ""; position: absolute; right: -2px; top: -4px; border: 5px solid transparent; border-left-color: var(--linha); }
+.barra { height: 12px; border-radius: 6px; background: var(--trilho-vazio); overflow: hidden; }
+.barra > span { display: block; height: 100%; width: calc(var(--p, 0) * 100%); background: var(--linha); border-radius: 6px;
+  transition: width 0.9s linear; }
 
-.mapa { height: 340px; margin-top: 12px; border-radius: 14px; overflow: hidden; border: 2px solid var(--verde-escuro); }
+/* ------------------------------------------------------------------ tabelas */
+.tabela { width: 100%; border-collapse: collapse; font-variant-numeric: tabular-nums; }
+.tabela th, .tabela td { text-align: left; padding: 10px 6px; border-top: 1px solid var(--trilho-vazio); vertical-align: middle; }
+.tabela thead th { border-top: 0; font-size: 0.85rem; color: var(--suave); font-weight: 700; padding-top: 0; }
+.chegadas td:nth-child(2) { white-space: nowrap; font-weight: 700; }
+.chegadas td:last-child { width: 34%; }
+.chegadas tr.proxima td { color: var(--marca); font-weight: 700; }
+.chegadas tr.destino td:first-child::after { content: " (seu destino)"; font-family: var(--texto); font-weight: 400; color: var(--suave); font-size: 0.85rem; }
+.chegadas .barra { height: 8px; }
+.diagnostico th[scope="row"] { font-weight: 500; font-size: 0.95rem; }
+.diagnostico .valor { white-space: nowrap; font-weight: 700; text-align: right; }
+.diagnostico .medidor { width: 30%; }
+.diagnostico .medidor::before { content: ""; display: block; height: 8px; border-radius: 4px; background: var(--trilho-vazio); margin-bottom: -8px; }
+.diagnostico .medidor span { display: block; height: 8px; border-radius: 4px; background: var(--linha); width: calc(var(--p, 0) * 100%);
+  transition: width 0.9s linear; }
+.diagnostico tr[data-nivel="atencao"] .medidor span { background: var(--sinal); }
+.diagnostico tr[data-nivel="ruim"] .medidor span { background: var(--perigo); }
+.diagnostico tr[data-nivel="ruim"] .valor { color: var(--perigo); }
+#diag[data-estado="alerta"] { border-color: var(--perigo); box-shadow: inset 0 0 0 2px var(--perigo); }
 
-.tipos { display: grid; gap: 10px; margin-top: 16px; }
-.tipos button { border: 2px solid var(--verde-escuro); background: transparent; color: var(--tinta); font-weight: 700; text-align: left; padding: 0 16px; }
-.tipos button:active { background: var(--ambar); color: #1A1300; }
+/* ------------------------------------------------------------------ a faixa: o trilho vivo (destino no topo) */
+.trens-resumo { margin-top: 20px; }
+.faixa { list-style: none; margin: 8px 0 8px; padding: 0 0 0 38px; position: relative; }
+.faixa::before, .faixa::after { content: ""; position: absolute; left: 14px; width: 8px; border-radius: 4px; }
+.faixa::before { top: 16px; bottom: 16px; background: var(--trilho-vazio); }
+/* o que já foi percorrido: da origem (embaixo) até o nó aceso */
+.faixa::after { top: var(--feito-topo, 100%); bottom: 16px; background: var(--linha); transition: top 0.9s linear; }
+.faixa li { position: relative; min-height: 46px; display: flex; flex-wrap: wrap; align-items: center; gap: 6px 10px; padding: 6px 0; z-index: 1; }
+.faixa .nome { font-weight: 500; }
+.faixa .estacao::before { content: ""; position: absolute; left: -31px; width: 18px; height: 18px; border-radius: 50%;
+  background: var(--papel); border: 4px solid var(--marca); }
+.faixa .terminal::before { border-radius: 5px; }
+.faixa .terminal .nome { font-weight: 700; }
+.faixa .eu { color: var(--marca); font-family: var(--titulo); font-weight: 700; }
+.faixa .eu::before { content: ""; position: absolute; left: -35px; width: 26px; height: 26px; border-radius: 50%;
+  background: var(--aceso); border: 4px solid var(--marca); animation: acender 2s ease-out infinite; }
+.faixa .trem { font-weight: 700; }
+.faixa .trem::before { content: ""; position: absolute; left: -35px; width: 26px; height: 18px; border-radius: 6px;
+  background: var(--marca); border: 3px solid var(--aceso); }
+.faixa .trem.estimado { font-weight: 500; color: var(--suave); }
+.faixa .trem.estimado::before { background: transparent; border-style: dashed; border-color: var(--marca); }
+.aviso { font-size: 0.85rem; font-weight: 700; padding: 2px 8px; border-radius: 6px; border: 2px dashed var(--sinal); color: var(--tinta); }
+.aviso.confirmado { background: var(--sinal); border-style: solid; color: var(--sinal-tinta); }
 
+.mapa { height: 360px; margin-top: 12px; border-radius: var(--raio); overflow: hidden; border: var(--b) solid var(--borda); }
+
+/* ------------------------------------------------------------------ segurar 1 s para enviar */
+.segurar { position: relative; overflow: hidden; isolation: isolate; }
+.segurar::before { content: ""; position: absolute; inset: 0; z-index: -1; background: var(--enche, var(--sinal));
+  transform: scaleX(0); transform-origin: left; }
+.segurar.segurando::before { transform: scaleX(1); transition: transform 1s linear; }
+.segurar.feito::before { transform: scaleX(1); }
+.tipos { display: grid; gap: 10px; margin-top: 12px; }
+.tipos button { border: var(--b) solid var(--borda); background: transparent; color: var(--tinta); font-weight: 700; text-align: left; padding: 0 16px; }
+.tipos button.feito { color: var(--sinal-tinta); } /* durante o preenchimento o texto fica na cor normal, legível */
+
+/* ------------------------------------------------------------------ SOS */
 .ligar { display: grid; gap: 10px; }
 .ligar a { display: flex; align-items: center; justify-content: center; background: var(--perigo); color: #fff;
-  font-weight: 800; font-size: 1.2rem; text-decoration: none; }
-.sos { width: 100%; margin-top: 16px; border: 3px solid var(--perigo); background: transparent; color: var(--perigo); font-weight: 800; }
+  font-family: var(--titulo); font-weight: 700; font-size: 1.25rem; text-decoration: none; }
+.sos { width: 100%; margin-top: 16px; border: 3px solid var(--perigo); background: transparent; color: var(--perigo); font-weight: 700; --enche: var(--perigo); }
+.sos.feito { color: #fff; }
 .contatos { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .contatos li { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
-.contato { display: flex; align-items: center; padding: 0 14px; border: 2px solid var(--verde-escuro); color: var(--tinta); text-decoration: none; font-weight: 700; }
+.contato { display: flex; align-items: center; padding: 0 14px; border: var(--b) solid var(--borda); color: var(--tinta); text-decoration: none; font-weight: 700; }
 .tirar { border: 0; background: transparent; color: var(--suave); text-decoration: underline; padding: 0 8px; }
+.novo { margin-top: 12px; }
 
+/* ------------------------------------------------------------------ guia do iPhone */
+.guia { margin: 14px 16px 0; padding: 16px; border-radius: var(--raio); background: var(--superficie);
+  border: var(--b) solid var(--marca); max-width: calc(600px - 32px); }
+@media (min-width: 632px) { .guia { margin-left: auto; margin-right: auto; } }
+.guia h2 { color: var(--marca); }
+.guia ol { margin: 0; padding-left: 1.3em; display: grid; gap: 8px; }
+
+/* ------------------------------------------------------------------ abas */
 .abas { position: fixed; inset: auto 0 0 0; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 6px;
-  padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: var(--verde-escuro); }
-.abas button { border: 0; background: transparent; color: #E9F5EC; font-weight: 800; font-size: 1rem; }
-.abas button[aria-current="true"] { background: var(--fundo); color: var(--verde-escuro); }
+  padding: 8px 8px calc(8px + env(safe-area-inset-bottom)); background: #14532D; z-index: 10; }
+.abas button { border: 0; background: transparent; color: #E9F5EC; font-weight: 700; font-size: 0.95rem;
+  display: grid; justify-items: center; gap: 2px; min-height: 60px; padding: 6px 0; }
+.abas svg { width: 26px; height: 26px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.abas svg .aceso { fill: #4ADE80; stroke: none; }
+.abas button[aria-current="true"] { background: #F6F4EC; color: #14532D; }
+.abas button[aria-current="true"] svg .aceso { fill: #1E9E4A; }
 .abas .ir-sos { color: #FFD6D1; }
-.abas .ir-sos[aria-current="true"] { background: var(--perigo); color: #fff; }
-@media (prefers-color-scheme: dark) { .abas { background: #082012; } }
+.abas .ir-sos[aria-current="true"] { background: #B42318; color: #fff; }
+@media (prefers-color-scheme: dark) { :root:not([data-sol]) .abas { background: #06170D; } }
+
+/* ------------------------------------------------------------------ movimento */
+@keyframes acender { 0% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.7); } 100% { box-shadow: 0 0 0 14px rgba(74, 222, 128, 0); } }
+@keyframes piscar { 50% { opacity: 0.3; } }
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+  .segurar.segurando::before { transform: scaleX(0.5); } /* sem animar: meio cheio mostra que está segurando */
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-sol]) .sos:not(.feito) { color: #FF9B8E; border-color: #FF9B8E; } /* vermelho claro: contraste no fundo escuro */
+}
+
+/* Nota 3 · P4: privacidade */
+.privacidade { margin-top: 24px; padding: 12px 14px; border-radius: var(--raio); border: var(--b) solid var(--trilho-vazio); background: var(--superficie); }
+.privacidade summary { font-family: var(--titulo); font-weight: 700; cursor: pointer; min-height: 32px; }
+.privacidade ul { margin: 10px 0 0; padding-left: 1.2em; display: grid; gap: 6px; color: var(--suave); font-size: 0.95rem; }
+
+/* revisão: GPS bom, mas fora da linha do trem */
+.principal[data-gps="fora"] { background: #14532D; color: #F6F4EC; box-shadow: inset 0 0 0 4px var(--sinal); }
+.principal[data-gps="fora"] .anel .feito { stroke: var(--sinal); stroke-dashoffset: 0; }
+/* revisão: segurar no celular sem selecionar texto nem abrir menu; arrastar para rolar cancela */
+.segurar { touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }

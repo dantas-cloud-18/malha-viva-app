@@ -14,8 +14,12 @@ function banco()                       {
         if (!req.result.objectStoreNames.contains(loja)) req.result.createObjectStore(loja, { autoIncrement: true });
       }
     };
-    req.onsuccess = () => ok(req.result);
-    req.onerror = () => falha(req.error);
+    req.onsuccess = () => {
+      // o iOS pode fechar a conexão em segundo plano: esquece a conexão e abre outra na próxima chamada
+      req.result.onclose = req.result.onversionchange = () => { req.result.close(); abrindo = null; };
+      ok(req.result);
+    };
+    req.onerror = () => { abrindo = null; falha(req.error); };
   });
   return abrindo;
 }

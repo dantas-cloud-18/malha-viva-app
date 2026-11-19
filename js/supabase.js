@@ -8,6 +8,12 @@ import { SUPABASE_CHAVE, SUPABASE_URL } from "./config.js";
                           
  
 
+const PRAZO_MS = 15_000;
+/** Sinal que aborta o fetch em 15 s (undefined em navegador antigo sem AbortSignal.timeout). */
+function prazo()                          {
+  return typeof AbortSignal !== "undefined" && "timeout" in AbortSignal ? AbortSignal.timeout(PRAZO_MS) : undefined;
+}
+
 /** Erro que vale tentar de novo (rede, 5xx, token vencido). Os outros são rejeição definitiva. */
 export class ErroTemporario extends Error {}
 
@@ -37,7 +43,8 @@ export class Supabase {
           async auth(caminho        , corpo         )                {
     let r          ;
     try {
-      r = await this.http(this.url + caminho, { method: "POST", headers: { apikey: this.chave, "Content-Type": "application/json" }, body: JSON.stringify(corpo) });
+      r = await this.http(this.url + caminho, { method: "POST", headers: { apikey: this.chave, "Content-Type": "application/json" },
+        body: JSON.stringify(corpo), signal: prazo() });
     } catch (e) { throw new ErroTemporario(String(e)); }
     if (!r.ok) {
       if (caminho.includes("refresh_token")) { this.sessao = null; this.guarda.gravar("null"); } // refresh inválido: novo login anônimo na próxima
@@ -46,8 +53,16 @@ export class Supabase {
     this.salvar(await r.json());
   }
 
-  /** Token válido: renova 60 s antes de vencer; sem sessão, faz login anônimo. */
-  async token()                  {
+          emVoo                         = null;
+
+  /** Token válido. Uma chamada por vez (A4): duas filas pedindo juntas no primeiro uso não fazem dois logins. */
+  token()                  {
+    this.emVoo ??= this.obterToken().finally(() => { this.emVoo = null; });
+    return this.emVoo;
+  }
+
+  /** Renova 60 s antes de vencer; sem sessão, faz login anônimo. */
+          async obterToken()                  {
     if (!this.sessao) {
       const token = await this.captcha(); // só no primeiro login do aparelho; depois a sessão é renovada sem CAPTCHA
       await this.auth("/auth/v1/signup", token ? { gotrue_meta_security: { captcha_token: token } } : {});
@@ -65,17 +80,19 @@ export class Supabase {
         method: "POST",
         headers: { apikey: this.chave, Authorization: "Bearer " + t, "Content-Type": "application/json", Prefer: "return=minimal" },
         body: JSON.stringify(linhas),
-        keepalive: true, // o envio continua se a página sair da tela no meio (lote de 100 posições ≈ 12 KB, abaixo do limite de 64 KB)
+        keepalive: true, // o envio continua se a página sair da tela no meio (lote de 100 posições ≈ 15 KB, abaixo do limite de 64 KB)
+        signal: prazo(), // A4: sem prazo, um envio pendurado deixava a fila mandar o mesmo lote de novo
       });
     } catch (e) { throw new ErroTemporario(String(e)); }
     if (r.status === 401) { if (this.sessao) this.sessao.expira_em = 0; throw new ErroTemporario("token vencido"); }
-    if (r.status >= 500) throw new ErroTemporario("servidor " + r.status);
+    // 408 (prazo) e 429 (limite de requisições) passam: tentar de novo, não descartar o lote
+    if (r.status >= 500 || r.status === 408 || r.status === 429) throw new ErroTemporario("servidor " + r.status);
     return r.ok ? "ok" : "rejeitado";
   }
 
   /** Lê uma visão ou tabela pública (sem login). */
   async ler   (consulta        )             {
-    const r = await this.http(`${this.url}/rest/v1/${consulta}`, { headers: { apikey: this.chave } });
+    const r = await this.http(`${this.url}/rest/v1/${consulta}`, { headers: { apikey: this.chave }, signal: prazo() });
     if (!r.ok) throw new Error("leitura " + r.status);
     return r.json();
   }

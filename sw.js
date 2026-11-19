@@ -1,5 +1,5 @@
 /** Service Worker: abre sem rede (casca do app em cache) e guarda o último traçado do ramal. */
-const VERSAO = "mv-f7aad934c9"; // trocado pelo build.mjs pelo hash da casca
+const VERSAO = "mv-6034f87fe8"; // trocado pelo build.mjs pelo hash da casca
 const sw = self                                       ;
 // Caminhos relativos à pasta do sw.js: o app funciona na raiz ou numa subpasta (ex.: GitHub Pages).
 const rel = (p        ) => new URL(p, location.href).pathname;
@@ -23,7 +23,8 @@ sw.addEventListener("activate", (ev) => {
 async function redePrimeiro(req         )                    {
   const cache = await caches.open(VERSAO);
   try {
-    const r = await fetch(req);
+    // prazo de 3 s: com sinal ruim no trem, o fetch ficava pendurado e o app não abria; cai para o cache
+    const r = await fetch(req, { signal: AbortSignal.timeout(3000) });
     if (r.ok) await cache.put(req, r.clone());
     return r;
   } catch {
@@ -43,4 +44,6 @@ sw.addEventListener("fetch", (ev) => {
   if (url.origin === location.origin && CASCA.includes(url.pathname)) ev.respondWith(cachePrimeiro(req));
   else if (url.origin === location.origin && DADOS.includes(url.pathname)) ev.respondWith(redePrimeiro(req));
   else if (url.hostname === "unpkg.com") ev.respondWith(cachePrimeiro(req)); // Leaflet
+  // Nota 2: fontes (Space Grotesk e Atkinson Hyperlegible) ficam guardadas para abrir sem rede
+  else if (url.hostname === "fonts.googleapis.com" || url.hostname === "fonts.gstatic.com") ev.respondWith(cachePrimeiro(req));
 });

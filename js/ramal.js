@@ -11,6 +11,95 @@ export function distanciaM(lat1        , lon1        , lat2        , lon2       
   return Math.hypot(x, (lat2 - lat1) * r) * 6_371_000;
 }
 
+                                                                          
+
+/**
+ * A9: km suavizado e "andando" entre uma posição e outra.
+ * Cada posição puxa o km previsto com peso pela precisão (10 m pesa ~0,75; 150 m pesa ~0,17).
+ * Entre posições, o km avança pela velocidade por até `maxAvancoS` segundos.
+ */
+export class Suavizador {
+  km                = null;
+  kmS = 0;          // velocidade em km/s, com sinal (+ = sentido Central)
+          t = 0;    // ms da última posição
+                   maxAvancoS        ;
+  constructor(maxAvancoS = 30) { this.maxAvancoS = maxAvancoS; }
+
+  atualizar(km        , precM        , t        , velMs               )       {
+    if (this.km == null || t - this.t > 120_000) { this.km = km; this.t = t; this.kmS = 0; return; }
+    const dt = Math.max(0.001, (t - this.t) / 1000);
+    const previsto = this.km + this.kmS * dt;
+    const peso = 1 / (1 + precM / 30);
+    const novo = previsto + peso * (km - previsto);
+    const kmSMedida = (novo - this.km) / dt;
+    // velocidade do GPS (sem sinal) dá o módulo; o km dá o sinal
+    const kmS = velMs != null && Math.abs(kmSMedida) > 1e-6 ? Math.sign(kmSMedida) * velMs / 1000 : kmSMedida;
+    this.kmS = 0.6 * this.kmS + 0.4 * kmS;
+    this.km = novo;
+    this.t = t;
+  }
+
+  /** km para mostrar agora (avança pela velocidade, no máximo `maxAvancoS` s depois da última posição). */
+  agora(t        )                {
+    if (this.km == null) return null;
+    const dt = Math.min(this.maxAvancoS, Math.max(0, (t - this.t) / 1000));
+    return this.km + this.kmS * dt;
+  }
+
+  /** +1 indo para a Central, -1 para Santa Cruz, 0 parado ou sem dado (abaixo de ~7 km/h). */
+  sentido()             {
+    return Math.abs(this.kmS) < 0.002 ? 0 : (this.kmS > 0 ? 1 : -1);
+  }
+}
+
+                                                                                
+
+/**
+ * A10: chegada e saída de cada estação. Parado = abaixo de 1 m/s; chegada depois de 15 s parado a até 300 m
+ * de uma estação; saída depois de 5 s acima de 2 m/s.
+ */
+export class DetectorParada {
+           paradas           = [];
+          lentoDesde                = null;
+          rapidoDesde                = null;
+          atual                = null;
+                   estacoes           ;
+
+  constructor(estacoes           ) { this.estacoes = estacoes; }
+
+  atualizar(km        , velMs        , t        )                {
+    if (velMs < 1) {
+      this.rapidoDesde = null;
+      this.lentoDesde ??= t;
+      if (!this.atual && t - this.lentoDesde >= 15_000) {
+        const e = this.estacoes.reduce((a, b) => (Math.abs(b.km - km) < Math.abs(a.km - km) ? b : a), this.estacoes[0]);
+        if (e && Math.abs(e.km - km) <= 0.3) {
+          this.atual = { estacao: e.nome, chegada: this.lentoDesde, saida: null };
+          this.paradas.push(this.atual);
+          return this.atual;
+        }
+      }
+    } else if (velMs > 2) {
+      this.lentoDesde = null;
+      this.rapidoDesde ??= t;
+      if (this.atual && t - this.rapidoDesde >= 5_000) {
+        this.atual.saida = this.rapidoDesde;
+        const fim = this.atual;
+        this.atual = null;
+        return fim;
+      }
+    }
+    return null;
+  }
+}
+
+/** Salto do GPS: velocidade acima de `vMaxMs` mesmo descontando o erro informado dos dois pontos. */
+export function pareceSalto(a       , b       , vMaxMs        )          {
+  const dt = (b.t - a.t) / 1000;
+  if (dt <= 0) return false;
+  return Math.max(0, distanciaM(a.lat, a.lon, b.lat, b.lon) - a.prec - b.prec) / dt > vMaxMs;
+}
+
 export class Ramal {
            base      ;
                    cx        ;
@@ -29,11 +118,24 @@ export class Ramal {
     return [(lon - lon0) * this.cx, (lat - lat0) * this.cy];
   }
 
-  /** km na linha e distância até ela (m). O(n) nos segmentos. */
-  projetar(lat        , lon        )                                {
+  /**
+   * km na linha e distância até ela (m). O(n) nos segmentos.
+   * Com `kmPerto` (A7, mapa com memória): procura só a ±`janelaKm` do km anterior, para o km não pular
+   * para o outro lado de uma volta da linha (ex.: perto de Deodoro). Se ali ficar longe demais, busca na linha toda.
+   */
+  projetar(lat        , lon        , kmPerto         , janelaKm = 2, distMax = 300)                                {
+    if (kmPerto != null) {
+      const p = this.projetarEntre(lat, lon, kmPerto - janelaKm, kmPerto + janelaKm);
+      if (p.distM <= distMax) return p;
+    }
+    return this.projetarEntre(lat, lon, -Infinity, Infinity);
+  }
+
+          projetarEntre(lat        , lon        , kmMin        , kmMax        )                                {
     const [px, py] = this.paraXY(lat, lon);
     let melhor = { km: 0, distM: Infinity };
     for (let i = 0; i < this.xy.length - 1; i++) {
+      if (this.base.linha[i + 1][2] < kmMin || this.base.linha[i][2] > kmMax) continue;
       const [ax, ay] = this.xy[i], [bx, by] = this.xy[i + 1];
       const dx = bx - ax, dy = by - ay, l2 = dx * dx + dy * dy || 1e-9;
       const t = Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / l2));
